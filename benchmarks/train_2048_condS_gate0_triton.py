@@ -1,5 +1,5 @@
 """
-condQ — condM Bug-Fix Baseline (13M, OpenWebText)
+condQ — condM Bug-Fix Baseline (13M, FineWeb-Edu)
 
 Purpose: Clean replication of the condM reference with all identified correctness
 issues fixed. No architectural changes, no optimizations — bug fixes only.
@@ -21,8 +21,8 @@ Architecture: identical to condM reference (verified)
 Also includes per-epoch passkey eval (consistent with eval_suite.py format).
 
 Run:
-  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u benchmarks/train_2048_condQ_bugfix_triton.py \
-    2>&1 | tee benchmarks/logs/condq_bugfix_run.log
+  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u benchmarks/train_2048_condS_gate0_triton.py \
+    2>&1 | tee benchmarks/logs/condS_gate0_run.log
 """
 
 import json, math, os, sys, time
