@@ -34,6 +34,7 @@ pub mod coverage_attractor;
 pub mod dsqg;
 pub mod fk_norm;
 pub mod hop_reachability;
+pub mod offset_optimizer;  // Offset-set filter-bank analysis: path counts, AM-GM, block optimizer
 pub mod nonlinear_field;
 pub mod rank_bottleneck;
 pub mod rg_init;
