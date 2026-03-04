@@ -76,6 +76,13 @@ ARCH_CONFIGS = {
     'condu_27m':   {'arch': 'condu', 'D': 400, 'H': 8, 'FFN': 1600, 'L': 6,  'full_layer': 5},
     'condu_35m':      {'arch': 'condu', 'D': 512, 'H': 8, 'FFN': 2048, 'L': 6,  'full_layer': 5},
     'condu_35m_pure': {'arch': 'condu', 'D': 512, 'H': 8, 'FFN': 2048, 'L': 6,  'full_layer': -1},
+    # condM layer-position ablation
+    'condm_13m_L0':  {'arch': 'condm', 'D': 256, 'H': 8, 'FFN': 1024, 'L': 6,  'full_layer': 0},
+    'condm_13m_L3':  {'arch': 'condm', 'D': 256, 'H': 8, 'FFN': 1024, 'L': 6,  'full_layer': 3},
+    # condV: condM+condU physics (CondMTransformer from train_2048_condV.py)
+    'condv_13m':     {'arch': 'condv', 'D': 256, 'H': 8, 'FFN': 1024, 'L': 6,  'full_layer': 5},
+    # condW: pure DSQG+INT, no full attention (CondWTransformer from train_2048_condW.py)
+    'condw_13m':     {'arch': 'condw', 'D': 256, 'H': 8, 'FFN': 1024, 'L': 6},
     'standard_13m':{'arch': 'standard', 'D': 256, 'H': 8, 'FFN': 1024, 'L': 6},
     'standard_27m':{'arch': 'standard', 'D': 400, 'H': 8, 'FFN': 1600, 'L': 6},
     'standard_85m':{'arch': 'standard', 'D': 640, 'H': 8, 'FFN': 2560, 'L': 12},
@@ -153,6 +160,35 @@ def load_model_from_arch(arch_name, checkpoint_path, device):
             vocab_size=VOCAB_SIZE, embedding_dim=D, num_layers=L,
             num_heads=H, ffn_dim=FFN, seq_len=MAX_SEQ_LEN,
             full_attn_layer=cfg.get('full_layer', L - 1),
+            interference_interval=cfg.get('interference', 3),
+        ).to(device)
+
+    elif arch == 'condv':
+        # condV: condM architecture + full condU physics stack (CondMTransformer in condV script)
+        import importlib.util
+        train_script = os.path.join(SCRIPT_DIR, 'train_2048_condV.py')
+        spec = importlib.util.spec_from_file_location('condv_train', train_script)
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cls = mod.CondMTransformer
+        model = cls(
+            vocab_size=VOCAB_SIZE, embedding_dim=D, num_layers=L,
+            num_heads=H, ffn_dim=FFN, seq_len=MAX_SEQ_LEN,
+            full_attn_layer=cfg.get('full_layer', L - 1),
+            interference_interval=cfg.get('interference', 3),
+        ).to(device)
+
+    elif arch == 'condw':
+        # condW: pure DSQG+INT stack, no full attention (CondWTransformer)
+        import importlib.util
+        train_script = os.path.join(SCRIPT_DIR, 'train_2048_condW.py')
+        spec = importlib.util.spec_from_file_location('condw_train', train_script)
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cls = mod.CondWTransformer
+        model = cls(
+            vocab_size=VOCAB_SIZE, embedding_dim=D, num_layers=L,
+            num_heads=H, ffn_dim=FFN, seq_len=MAX_SEQ_LEN,
             interference_interval=cfg.get('interference', 3),
         ).to(device)
 
