@@ -747,9 +747,12 @@ def main():
     splits = load_data(NUM_DOCS)
 
     _script_dir     = os.path.dirname(os.path.abspath(__file__))
+    _repo_root      = os.path.dirname(_script_dir)   # one level up from train/
     _tok_candidates = [
-        os.path.join(_script_dir, 'results', '2048_condI_tokenizer.json'),
-        os.path.join(_script_dir, '2048_condI_tokenizer.json'),
+        os.path.join(_repo_root,   'results', '2048_condI_tokenizer.json'),
+        os.path.join(_script_dir,  'results', '2048_condI_tokenizer.json'),
+        os.path.join(_script_dir,  '2048_condI_tokenizer.json'),
+        'results/2048_condI_tokenizer.json',
     ]
     tok_path = next((p for p in _tok_candidates if os.path.exists(p)), None)
     if tok_path:
