@@ -80,7 +80,7 @@ _INTRO_TEMPLATE   = 'the secret word is {word} .'
 _RETRIEVAL_CUE    = 'the secret word is'
 
 SAVE_DIR    = 'checkpoints/2048_dsqg_hybrid_13m_interleaved'
-RESULT_FILE = 'logs/dsqg_hybrid_13m_2048_interleaved_results.json'
+RESULT_FILE = 'benchmarks/logs/dsqg_hybrid_13m_2048_interleaved_results.json'
 
 import pathlib as _pl
 _kernel_dir = str(_pl.Path(__file__).parent.parent / 'kernels')
