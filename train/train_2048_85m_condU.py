@@ -55,7 +55,7 @@ BATCH_SIZE    = 8
 GRAD_ACCUM    = 4
 LR            = 3e-4
 MAX_SEQ_LEN   = 2048
-NUM_DOCS      = 100_000
+NUM_DOCS      = 300_000   # 300K docs → ~158K train seqs; need ≥125K for 100% Chinchilla@ep7
 
 EMBEDDING_DIM   = 768     # D=768  (HD=64 with H=12, power-of-2, Triton-safe)
 NUM_LAYERS      = 8
@@ -76,7 +76,7 @@ MAX_TRAIN_SEQS = None   # set dynamically in main()
 FW_DATASET_NAME = 'HuggingFaceFW/fineweb-edu'
 FW_SUBSET       = 'sample-10BT'
 FW_MIN_CHARS    = 5_000
-FW_CACHE_FILE   = 'logs/condm_fineweb_edu_doc_cache.json'
+FW_CACHE_FILE   = 'logs/fineweb_edu_300k_doc_cache.json'  # 300K doc cache (distinct from 100K)
 
 # ── Passkey eval ──────────────────────────────────────────────────────────────
 
