@@ -67,7 +67,7 @@ MAX_TRAIN_SEQS = None   # set in main()
 FW_DATASET_NAME = 'HuggingFaceFW/fineweb-edu'
 FW_SUBSET       = 'sample-10BT'
 FW_MIN_CHARS    = 5_000
-FW_CACHE_FILE   = 'benchmarks/logs/condm_fineweb_edu_doc_cache.json'
+FW_CACHE_FILE   = 'logs/condm_fineweb_edu_doc_cache.json'
 
 # ── Passkey eval ──────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ _RETRIEVAL_CUE    = 'the secret word is'
 # ── Save paths ────────────────────────────────────────────────────────────────
 
 SAVE_DIR    = 'checkpoints/2048_condU_35m_checkpoints'
-RESULT_FILE = 'benchmarks/logs/condU_35m_results.json'
+RESULT_FILE = 'logs/condU_35m_results.json'
 
 # ── condN offset set (44 offsets — same as condU 13M) ─────────────────────────
 
@@ -737,13 +737,16 @@ def main():
           f'1 FullAttn @ layer {FULL_ATTN_LAYER}')
     print(f'  References: condM_27M=44.500/83.3%pk | condU_13M=52.206/43.3%pk | Standard_13M=64.070')
 
-    os.makedirs('benchmarks/logs', exist_ok=True)
+    os.makedirs('logs', exist_ok=True)
 
     splits = load_data(NUM_DOCS)
 
     _script_dir     = os.path.dirname(os.path.abspath(__file__))
+    _repo_root      = os.path.dirname(_script_dir)   # one level up from train/
     _tok_candidates = [
-        os.path.join(_script_dir, 'results', '2048_condI_tokenizer.json'),
+        os.path.join(_repo_root,  'results',              '2048_condI_tokenizer.json'),
+        os.path.join(_repo_root,  'benchmarks', 'results', '2048_condI_tokenizer.json'),
+        os.path.join(_script_dir, 'results',              '2048_condI_tokenizer.json'),
         os.path.join(_script_dir, '2048_condI_tokenizer.json'),
     ]
     tok_path = next((p for p in _tok_candidates if os.path.exists(p)), None)
@@ -754,7 +757,7 @@ def main():
     else:
         raise FileNotFoundError('condI tokenizer not found')
 
-    _encoded_cache = 'benchmarks/logs/fineweb_encoded_2048.pt'
+    _encoded_cache = 'logs/fineweb_encoded_2048.pt'
     if os.path.exists(_encoded_cache):
         print(f'Loading pre-encoded dataset from {_encoded_cache} ...')
         _cache     = torch.load(_encoded_cache, weights_only=True)
