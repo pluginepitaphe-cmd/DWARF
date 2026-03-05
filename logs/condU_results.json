@@ -1,0 +1,418 @@
+{
+  "experiment": "condU_qweighted_scale",
+  "kernel": "dsqg_attention_v3",
+  "changes_vs_condT": [
+    "drop_band_masking",
+    "add_scale_embed_v3",
+    "retain_if_amplifier",
+    "retain_huygens_kv"
+  ],
+  "final_test_ppl": 52.20616776177085,
+  "final_passkey_mean": 0.43333333333333335,
+  "final_passkey_by_d": {
+    "1": 0.2,
+    "2": 0.2,
+    "4": 0.2,
+    "8": 0.4,
+    "16": 0.4,
+    "32": 0.6,
+    "64": 0.8,
+    "128": 0.4,
+    "256": 0.8,
+    "512": 0.4,
+    "1024": 0.4,
+    "1536": 0.4
+  },
+  "per_epoch": [
+    {
+      "epoch": 1,
+      "val_ppl": 151.63539888232162,
+      "train_loss": 5.7973453636887005,
+      "chinchilla_pct": 38.38192712254769,
+      "elapsed_s": 350.78810691833496,
+      "passkey_mean": 0.0,
+      "passkey_by_d": {
+        "1": 0.0,
+        "2": 0.0,
+        "4": 0.0,
+        "8": 0.0,
+        "16": 0.0,
+        "32": 0.0,
+        "64": 0.0,
+        "128": 0.0,
+        "256": 0.0,
+        "512": 0.0,
+        "1024": 0.0,
+        "1536": 0.0
+      },
+      "scale_embed_abs_mean": 0.11647644490003586,
+      "if_gain": [
+        1.0129999041557312,
+        1.0111908555030822,
+        1.019324779510498,
+        1.0022127866744994,
+        1.0263602018356324,
+        1.0030721426010132,
+        1.0100586414337158,
+        0.9935935020446778
+      ]
+    },
+    {
+      "epoch": 2,
+      "val_ppl": 81.29014061718144,
+      "train_loss": 4.775700555553714,
+      "chinchilla_pct": 76.76385424509537,
+      "elapsed_s": 718.3068232536316,
+      "passkey_mean": 0.0,
+      "passkey_by_d": {
+        "1": 0.0,
+        "2": 0.0,
+        "4": 0.0,
+        "8": 0.0,
+        "16": 0.0,
+        "32": 0.0,
+        "64": 0.0,
+        "128": 0.0,
+        "256": 0.0,
+        "512": 0.0,
+        "1024": 0.0,
+        "1536": 0.0
+      },
+      "scale_embed_abs_mean": 0.16548486053943634,
+      "if_gain": [
+        1.0027823567390441,
+        1.0088335275650024,
+        1.0196271181106566,
+        0.9979297041893005,
+        1.0231731534004211,
+        0.9837229132652283,
+        1.0043355703353882,
+        0.9660277009010315
+      ]
+    },
+    {
+      "epoch": 3,
+      "val_ppl": 66.08703425450877,
+      "train_loss": 4.368912374365677,
+      "chinchilla_pct": 115.14578136764307,
+      "elapsed_s": 1071.18718791008,
+      "passkey_mean": 0.11666666666666668,
+      "passkey_by_d": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.2,
+        "16": 0.2,
+        "32": 0.2,
+        "64": 0.2,
+        "128": 0.0,
+        "256": 0.0,
+        "512": 0.0,
+        "1024": 0.0,
+        "1536": 0.0
+      },
+      "scale_embed_abs_mean": 0.19343359172344207,
+      "if_gain": [
+        1.0123781561851501,
+        1.0130029201507569,
+        1.0251344442367554,
+        0.9959598064422608,
+        1.0203557014465332,
+        0.9666368842124939,
+        0.9881028413772583,
+        0.9516246438026428
+      ]
+    },
+    {
+      "epoch": 4,
+      "val_ppl": 59.91431640231045,
+      "train_loss": 4.218298808318897,
+      "chinchilla_pct": 153.52770849019075,
+      "elapsed_s": 1422.7353410720825,
+      "passkey_mean": 0.25,
+      "passkey_by_d": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.2,
+        "16": 0.2,
+        "32": 0.2,
+        "64": 0.4,
+        "128": 0.2,
+        "256": 0.6,
+        "512": 0.2,
+        "1024": 0.4,
+        "1536": 0.0
+      },
+      "scale_embed_abs_mean": 0.20938745141029358,
+      "if_gain": [
+        1.0206854462623596,
+        1.0150861978530883,
+        1.027377438545227,
+        0.9945056915283204,
+        1.015800654888153,
+        0.9572780132293701,
+        0.9732621073722839,
+        0.9430358648300171
+      ]
+    },
+    {
+      "epoch": 5,
+      "val_ppl": 56.335344892224974,
+      "train_loss": 4.135454310520181,
+      "chinchilla_pct": 191.90963561273844,
+      "elapsed_s": 1772.2129409313202,
+      "passkey_mean": 0.31666666666666665,
+      "passkey_by_d": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.2,
+        "16": 0.2,
+        "32": 0.6,
+        "64": 0.6,
+        "128": 0.4,
+        "256": 0.6,
+        "512": 0.2,
+        "1024": 0.4,
+        "1536": 0.0
+      },
+      "scale_embed_abs_mean": 0.21879954934120177,
+      "if_gain": [
+        1.0259509086608887,
+        1.015679168701172,
+        1.0293298006057738,
+        0.9932305097579956,
+        1.0112807631492615,
+        0.9521153688430786,
+        0.9629979610443116,
+        0.9380002498626709
+      ]
+    },
+    {
+      "epoch": 6,
+      "val_ppl": 54.404632398409696,
+      "train_loss": 4.085314538293672,
+      "chinchilla_pct": 230.29156273528613,
+      "elapsed_s": 2129.9448363780975,
+      "passkey_mean": 0.39999999999999997,
+      "passkey_by_d": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.2,
+        "16": 0.2,
+        "32": 0.6,
+        "64": 0.8,
+        "128": 0.4,
+        "256": 0.8,
+        "512": 0.4,
+        "1024": 0.4,
+        "1536": 0.4
+      },
+      "scale_embed_abs_mean": 0.224049973487854,
+      "if_gain": [
+        1.028105878829956,
+        1.0162996888160705,
+        1.0303661108016968,
+        0.9924949884414673,
+        1.0082333087921143,
+        0.9495977997779846,
+        0.95609050989151,
+        0.9351640939712524
+      ]
+    },
+    {
+      "epoch": 7,
+      "val_ppl": 52.772379422364764,
+      "train_loss": 4.0459411268674055,
+      "chinchilla_pct": 268.67348985783383,
+      "elapsed_s": 2487.5975782871246,
+      "passkey_mean": 0.3333333333333333,
+      "passkey_by_d": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.2,
+        "16": 0.2,
+        "32": 0.4,
+        "64": 0.4,
+        "128": 0.4,
+        "256": 0.8,
+        "512": 0.4,
+        "1024": 0.4,
+        "1536": 0.2
+      },
+      "scale_embed_abs_mean": 0.2266659289598465,
+      "if_gain": [
+        1.0291226267814637,
+        1.0168078899383546,
+        1.0312522649765015,
+        0.9927008986473084,
+        1.0064393162727356,
+        0.948643434047699,
+        0.9521182656288147,
+        0.9336730122566224
+      ]
+    },
+    {
+      "epoch": 8,
+      "val_ppl": 51.967470797736226,
+      "train_loss": 4.025014235701375,
+      "chinchilla_pct": 307.0554169803815,
+      "elapsed_s": 2844.3677277565002,
+      "passkey_mean": 0.4000000000000001,
+      "passkey_by_d": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.4,
+        "16": 0.4,
+        "32": 0.4,
+        "64": 0.8,
+        "128": 0.4,
+        "256": 0.8,
+        "512": 0.4,
+        "1024": 0.4,
+        "1536": 0.2
+      },
+      "scale_embed_abs_mean": 0.22777471840381622,
+      "if_gain": [
+        1.0294096708297729,
+        1.0173972606658936,
+        1.032037091255188,
+        0.9928807616233826,
+        1.0059073209762572,
+        0.9483279943466186,
+        0.9503065586090088,
+        0.9330474019050599
+      ]
+    },
+    {
+      "epoch": 9,
+      "val_ppl": 51.61142888199296,
+      "train_loss": 4.00422630784581,
+      "chinchilla_pct": 345.4373441029292,
+      "elapsed_s": 3200.6623306274414,
+      "passkey_mean": 0.4166666666666667,
+      "passkey_by_d": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.4,
+        "16": 0.4,
+        "32": 0.6,
+        "64": 0.8,
+        "128": 0.4,
+        "256": 0.8,
+        "512": 0.4,
+        "1024": 0.4,
+        "1536": 0.2
+      },
+      "scale_embed_abs_mean": 0.2281243920326233,
+      "if_gain": [
+        1.0294968843460084,
+        1.0176889657974244,
+        1.0323953866958617,
+        0.9933352828025818,
+        1.0056391716003419,
+        0.9483723759651184,
+        0.9495359897613526,
+        0.9328931331634521
+      ]
+    },
+    {
+      "epoch": 10,
+      "val_ppl": 51.554651951734876,
+      "train_loss": 4.001014658258956,
+      "chinchilla_pct": 383.8192712254769,
+      "elapsed_s": 3557.2486474514008,
+      "passkey_mean": 0.43333333333333335,
+      "passkey_by_d": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.4,
+        "16": 0.4,
+        "32": 0.6,
+        "64": 0.8,
+        "128": 0.4,
+        "256": 0.8,
+        "512": 0.4,
+        "1024": 0.4,
+        "1536": 0.4
+      },
+      "scale_embed_abs_mean": 0.22817260921001434,
+      "if_gain": [
+        1.0295228362083435,
+        1.017756950855255,
+        1.0324542045593261,
+        0.9933456778526306,
+        1.0056239008903503,
+        0.9483787417411804,
+        0.9494240164756775,
+        0.932873809337616
+      ]
+    }
+  ],
+  "temperature_sweep": {
+    "greedy": [
+      " day.\nThe first time the first time the first time the first time the first time the first time the second time the seco",
+      " is the same as the length of the hypotenuse. The hypotenuse is the most common form of hypotenuse. The hypotenuse is th",
+      " States, the President of the United States, and the President of the United States, are the President of the United Sta",
+      " a great deal of confusion in the history of the world.\nThe first time the world was in the hands of the people of the w",
+      " the results are not consistent with the results.\nThe results are consistent with the results of the study. The results "
+    ],
+    "T=0.5": [
+      " day, and it was a time when it was at the same time a day.\nThe first of the three days of the first week of the first w",
+      " is small.\nThe body is the largest body in the world. The body is the largest body in the world. The body is the largest",
+      " States, the President of the United States, the President of the United States, the President of the United States, and",
+      " a need for the new version of the original version, which would be a good idea to see the idea of a new version of the ",
+      " the presence of a single group of individuals may be associated with a single group of individuals.\nThe following are t"
+    ],
+    "T=0.7": [
+      " man, and he was a mortal man.\nThe King of the South, at the age of five, was a great monarch, and the first king was a ",
+      " is to be 3.5 to 6.5 to 4.5. The partial and partial inserts are the equivalent of 3.6 to 4.5. The partial inserts are t",
+      " States (RFC) and the President of the United States (RFC) and the President of the United States (RFC) are the Presiden",
+      " no need for a gun or gun to be used. The first question is whether a gun or gun were used to carry gun or gun, and whet",
+      " the entire body of the body is not a substitute for the body.\nThe following are the first steps of the study:\n- The thi"
+    ],
+    "T=1.0": [
+      " town and usually well known as WhiteWest about 150 miles wide. The skaty night was the end of the fort's \"Mother Rock\" ",
+      " tube during the treatment with all of the normal and most inefficient treatment of non-phenol arsenic cells was signifi",
+      " States (ECV) charged with keeping treaties at the federal government's core authority to eliminate the words (which sho",
+      " no judgment of the people by the name of king and of the nation that he had taken on the subject. The Sultan of Exalatu",
+      " syng\ufffd\ufffdpheets are subject to a stress factor at the age of three. The effect of preactive aerodynamic reflex is similar "
+    ]
+  },
+  "attn_summary": {
+    "pos_bias_abs_mean": 2.972057247161865,
+    "pos_bias_abs_max": 11.517131805419922,
+    "pos_bias_mean_per_head": [
+      -0.5311292111873627,
+      -1.2749845743179322,
+      -1.9767222642898559,
+      -2.677347707748413,
+      -3.3599029541015626,
+      -3.9842995166778565,
+      -4.641738700866699,
+      -5.314078044891358
+    ],
+    "scale_embed_abs_mean": 0.22817260921001434,
+    "scale_embed_abs_max": 0.8761603236198425,
+    "if_gain": [
+      1.0295228362083435,
+      1.017756950855255,
+      1.0324542045593261,
+      0.9933456778526306,
+      1.0056239008903503,
+      0.9483787417411804,
+      0.9494240164756775,
+      0.932873809337616
+    ]
+  },
+  "i3g0_reference_ppl": 52.948,
+  "i3g0_reference_passkey": 0.533,
+  "condm_reference_ppl": 54.529,
+  "condm_reference_passkey": 0.833
+}
