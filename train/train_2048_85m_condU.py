@@ -21,14 +21,14 @@ PURPOSE
 ARCHITECTURE
   D=768, H=12, d_head=64, L=8, FFN=3072
   HD=64 — power-of-2, Triton V3 kernel fully native (zero waste groups)
-  Layer types: [DSQG, DSQG, DSQG+INT, DSQG, DSQG, DSQG+INT, DSQG, FULL]
-  INT at layers 2 and 5 (i%3 == 2); FULL at layer 7
+  Layer types: [DSQG, DSQG, DSQG, DSQG+INT, DSQG, DSQG, DSQG, FULL]
+  INT at layer 3 only (i%4 == 3); FULL at layer 7
   ~82M parameters (tied input/output embeddings)
 
 HYPERPARAMETERS (H200 SXM — 141 GB HBM3e)
   B=8, GA=4 (same effective batch as condM 85M H200 run)
   LR=3e-4, cosine, AdamW, 10 epochs, FineWeb-Edu 100K docs
-  MAX_TRAIN_SEQS=52_716 (iso-compute with all prior runs)
+  MAX_TRAIN_SEQS computed dynamically: int(20*N/(7*2048)) → epoch 7 = 100% Chinchilla
 
 Run on RunPod H200 SXM:
   cd /root/DWARF
@@ -61,10 +61,15 @@ EMBEDDING_DIM   = 768     # D=768  (HD=64 with H=12, power-of-2, Triton-safe)
 NUM_LAYERS      = 8
 NUM_HEADS       = 12      # d_head = 64
 FFN_DIM         = 3072    # 4 × EMBEDDING_DIM
-INTERFERENCE    = 3
+INTERFERENCE    = 4       # L=8: INT at layer 3 only (i%4==3); layer 7 is FULL → 1 INT layer
+                          # was 3 → caused 2 Huygens K/V injections (layers 2+5), train/val divergence
 FULL_ATTN_LAYER = 7       # last layer in L=8 stack (7 DSQG preprocessors)
 
-MAX_TRAIN_SEQS = 52_716   # iso-compute with all prior condU/condM runs
+# MAX_TRAIN_SEQS is computed dynamically after model init:
+#   int(20 * n_params / (7 * MAX_SEQ_LEN))
+# so that epoch 7 ≈ 100% Chinchilla-optimal for this model size.
+# This makes cross-size comparisons fair (no token/param confound).
+MAX_TRAIN_SEQS = None   # set dynamically in main()
 
 # ── FineWeb-Edu dataset config ────────────────────────────────────────────────
 
@@ -769,18 +774,12 @@ def main():
         train_data = _cache['train']
         val_data   = _cache['val']
         test_data  = _cache['test']
-        if len(train_data) > MAX_TRAIN_SEQS:
-            idx        = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
-            train_data = train_data[idx]
+        # No subsetting yet — defer until after model init (Chinchilla-normalized)
         print(f'  train: {len(train_data):,}  val: {len(val_data):,}  '
-              f'test: {len(test_data):,} seqs (from cache)')
+              f'test: {len(test_data):,} seqs (from cache, pre-subset)')
     else:
         print(f'Encoding data (max_seq_len={MAX_SEQ_LEN})...')
         train_data = encode_split(splits['train'], tokenizer, MAX_SEQ_LEN, 'Train')
-        if len(train_data) > MAX_TRAIN_SEQS:
-            idx        = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
-            train_data = train_data[idx]
-            print(f'  Capped to {MAX_TRAIN_SEQS:,} train seqs (iso-compute)')
         val_data   = encode_split(splits['val'],   tokenizer, MAX_SEQ_LEN, 'Val')
         test_data  = encode_split(splits['test'],  tokenizer, MAX_SEQ_LEN, 'Test')
         torch.save({'train': train_data, 'val': val_data, 'test': test_data},
@@ -809,6 +808,16 @@ def main():
             layer_types.append('DSQG')
     print(f'\ncondU 85M: {n_params:,} parameters')
     print(f'  Layer types: {layer_types}')
+
+    # Chinchilla-normalized subsetting: epoch 7 ≈ 100% Chinchilla-optimal
+    MAX_TRAIN_SEQS = int(20 * n_params / (7 * MAX_SEQ_LEN))
+    print(f'  Chinchilla max seqs/epoch: {MAX_TRAIN_SEQS:,}')
+    print(f'  (= 20 × {n_params:,} params / (7 × {MAX_SEQ_LEN} tokens))')
+    if len(train_data) > MAX_TRAIN_SEQS:
+        idx        = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
+        train_data = train_data[idx]
+    print(f'  train: {len(train_data):,}  val: {len(val_data):,}  '
+          f'test: {len(test_data):,} seqs (after Chinchilla subsetting)')
 
     if not causality_check(model, device):
         return

@@ -58,7 +58,9 @@ FFN_DIM       = 2048     # 4 × EMBEDDING_DIM
 INTERFERENCE  = 3
 FULL_ATTN_LAYER = 5
 
-MAX_TRAIN_SEQS = 52_716  # iso-compute with condU 13M
+# MAX_TRAIN_SEQS computed dynamically after model init:
+#   int(20 * n_params / (7 * MAX_SEQ_LEN))  → epoch 7 ≈ 100% Chinchilla-optimal
+MAX_TRAIN_SEQS = None   # set in main()
 
 # ── FineWeb-Edu dataset config ────────────────────────────────────────────────
 
@@ -759,18 +761,12 @@ def main():
         train_data = _cache['train']
         val_data   = _cache['val']
         test_data  = _cache['test']
-        if len(train_data) > MAX_TRAIN_SEQS:
-            idx        = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
-            train_data = train_data[idx]
+        # No subsetting yet — defer until after model init
         print(f'  train: {len(train_data):,}  val: {len(val_data):,}  '
-              f'test: {len(test_data):,} seqs (from cache)')
+              f'test: {len(test_data):,} seqs (from cache, pre-subset)')
     else:
         print(f'Encoding data (max_seq_len={MAX_SEQ_LEN})...')
         train_data = encode_split(splits['train'], tokenizer, MAX_SEQ_LEN, 'Train')
-        if len(train_data) > MAX_TRAIN_SEQS:
-            idx        = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
-            train_data = train_data[idx]
-            print(f'  Capped to {MAX_TRAIN_SEQS:,} train seqs (iso-compute)')
         val_data   = encode_split(splits['val'],   tokenizer, MAX_SEQ_LEN, 'Val')
         test_data  = encode_split(splits['test'],  tokenizer, MAX_SEQ_LEN, 'Test')
 
@@ -794,8 +790,18 @@ def main():
             layer_types.append('DSQG+INT')
         else:
             layer_types.append('DSQG')
-    print(f'\ncondU 27M: {n_params:,} parameters')
+    print(f'\ncondU 39M: {n_params:,} parameters')
     print(f'  Layer types: {layer_types}')
+
+    # Chinchilla-normalized subsetting: epoch 7 ≈ 100% Chinchilla-optimal
+    MAX_TRAIN_SEQS = int(20 * n_params / (7 * MAX_SEQ_LEN))
+    print(f'  Chinchilla max seqs/epoch: {MAX_TRAIN_SEQS:,}')
+    print(f'  (= 20 × {n_params:,} params / (7 × {MAX_SEQ_LEN} tokens))')
+    if len(train_data) > MAX_TRAIN_SEQS:
+        idx        = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
+        train_data = train_data[idx]
+    print(f'  train: {len(train_data):,}  val: {len(val_data):,}  '
+          f'test: {len(test_data):,} seqs (after Chinchilla subsetting)')
 
     if not causality_check(model, device):
         return
