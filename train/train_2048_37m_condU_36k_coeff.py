@@ -1,99 +1,99 @@
 """
-condU 85M — Q-Weighted Scale Gains, Scaling Series (RunPod H200 SXM)
+condU — Q-Weighted Scale Gains (13M, FineWeb-Edu)
 
-Scales condU to 85M (D=768, H=12) — the headline result of the condU
-scaling series (13M → 35M → 85M). Same physics stack and hybrid structure
-as condU 35M, scaled up:
+Purpose: Replace condT's hard spectral band masking with learned soft band
+  separation via Q-weighted scale embeddings (DSQG kernel V3).
 
-  - Q-weighted scale gains (V3 kernel, scale_embed [44, HD], zero-init)
-  - IF amplifier (per-head learnable gain, init 1.0)
-  - Huygens K/V injection (interference → K,V only; Q unchanged)
-  - gate=0 (correct design from gate-bias ablation)
-  - INTERFERENCE=3, FULL_ATTN_LAYER=7 (last layer in L=8 stack)
+condT diagnosis:
+  Hard -100 band masking was theoretically sound (Rust SNR proofs held) but
+  created an asymmetry in learning dynamics: local/mid heads got dense gradient
+  signal from frequent short-distance positions, while global heads (targeting
+  d>=256) received only sparse gradient from rare long-range positions, AND were
+  prevented from bootstrapping via local gradients. Result: global heads
+  completely dark through all 10 epochs; passkey plateaued at 13.3%.
 
-PURPOSE
--------
-  1. Headline condU result: does the condU physics stack beat condM 85M
-     (36.042 PPL, 83.3% passkey) at matched scale?
-  2. Complete the 13M → 35M → 85M power-law scaling curve.
-  3. Cross-domain physics → ML translation at 85M param publication scale.
+condU fix — three modifications (condT Huygens + IF retained; band mask dropped):
 
-ARCHITECTURE
-  D=768, H=12, d_head=64, L=8, FFN=3072
-  HD=64 — power-of-2, Triton V3 kernel fully native (zero waste groups)
-  Layer types: [DSQG, DSQG, DSQG, DSQG+INT, DSQG, DSQG, DSQG, FULL]
-  INT at layer 3 only (i%4 == 3); FULL at layer 7
-  ~82M parameters (tied input/output embeddings)
+  1. Q-WEIGHTED SCALE GAINS (new, replaces band masking) — V3 kernel.
+     score[n,j,h] = Q[n,h].K[n-dj]/sqrt(HD)     (content matching, as before)
+                  + pos_bias[j,h]                  (global learned prior, as before)
+                  + Q[n,h].scale_embed[j]/sqrt(HD) (NEW: matched filter)
+     scale_embed [44, HD] initialized to zeros -> starts as pure pos_bias (V2
+     behavior); learns Q directions that predict each offset's usefulness.
+     Soft banding: model learns TOWARD spectral selectivity rather than having
+     it imposed. No bootstrap penalty -- global heads can still develop via local
+     gradient signal and transition to long-range as scale_embed learns.
+     Physics: matched-filter principle. SNR(Q-weighted) >> SNR(uniform) when
+     scale_embed[j] aligns with Q for the target offset j.
+     Rust test: coherent_scale_retrieval -- signal boost = J x uniform.
 
-HYPERPARAMETERS (H200 SXM — 141 GB HBM3e)
-  B=8, GA=4 (same effective batch as condM 85M H200 run)
-  LR=3e-4, cosine, AdamW, 10 epochs, FineWeb-Edu 100K docs
-  MAX_TRAIN_SEQS computed dynamically: int(20*N/(7*2048)) → epoch 7 = 100% Chinchilla
+  2. IF AMPLIFIER (retained from condT) -- per-head learnable scalar gain.
+     out[h] = if_gain[h] * attn_out[h] * gate[h]
+     Initialized to 1.0. Global heads (weaker long-range signal) can learn
+     higher gain to compensate for distance attenuation.
 
-Run on RunPod H200 SXM:
-  cd /root/DWARF
-  python3 -u benchmarks/train_2048_85m_condU.py \\
-    2>&1 | tee benchmarks/logs/condU_85m_run.log
+  3. HUYGENS K/V INJECTION (retained from condT) -- interference into K/V only.
+     k += inter_k_proj(inter_signal)
+     v += inter_v_proj(inter_signal)
+     Q unchanged -- local oscillator stays clean.
 
-References:
-  condM 85M:    36.042 PPL, 83.3% passkey (88M params, L=12, full_layer=11)
-  condU 35M:    38.542 PPL, 85.0% passkey (39M params, L=6,  full_layer=5)
-  Standard 85M: 39.447 PPL              (101M params, L=12, plain attn)
-  condM 27M:    44.500 PPL, 83.3% passkey
+  Base: condS I3G0 (52.948 PPL, 53.3% passkey)
+  Target: exceed condS I3G0 on both PPL and passkey.
+
+Run:
+  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u benchmarks/train_2048_condU.py \
+    2>&1 | tee benchmarks/logs/condU_run.log
 """
 
 import json, math, os, sys, time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 
-# ── Hyperparameters ────────────────────────────────────────────────────────────
+# -- Hyperparameters (identical to condM/condT reference) ----------------------
 
-VOCAB_SIZE    = 32000
-NUM_EPOCHS    = 10
-BATCH_SIZE    = 8
-GRAD_ACCUM    = 4
-LR            = 3e-4
-MAX_SEQ_LEN   = 2048
-NUM_DOCS      = 300_000   # 300K docs → ~158K train seqs; need ≥125K for 100% Chinchilla@ep7
+VOCAB_SIZE      = 32000
+NUM_EPOCHS      = 10
+BATCH_SIZE      = 8
+GRAD_ACCUM      = 4
+LR              = 3e-4
+MAX_SEQ_LEN     = 2048
+NUM_DOCS        = 100_000
 
-EMBEDDING_DIM   = 768     # D=768  (HD=64 with H=12, power-of-2, Triton-safe)
-NUM_LAYERS      = 8
-NUM_HEADS       = 8      # d_head = 64
-FFN_DIM         = 5120    # 4 × EMBEDDING_DIM
-INTERFERENCE    = 4       # L=8: INT at layer 3 only (i%4==3); layer 7 is FULL → 1 INT layer
-                          # was 3 → caused 2 Huygens K/V injections (layers 2+5), train/val divergence
-FULL_ATTN_LAYER = 7       # last layer in L=8 stack (7 DSQG preprocessors)
+EMBEDDING_DIM   = 384
+NUM_LAYERS      = 6
+NUM_HEADS       = 16
+FFN_DIM         = 1536
+INTERFERENCE    = 3
+FULL_ATTN_LAYER = 5
 
-# MAX_TRAIN_SEQS is computed dynamically after model init:
-#   int(20 * n_params / (7 * MAX_SEQ_LEN))
-# so that epoch 7 ≈ 100% Chinchilla-optimal for this model size.
-# This makes cross-size comparisons fair (no token/param confound).
-MAX_TRAIN_SEQS = None   # set dynamically in main()
-
-# ── FineWeb-Edu dataset config ────────────────────────────────────────────────
+# -- FineWeb-Edu dataset config ------------------------------------------------
 
 FW_DATASET_NAME = 'HuggingFaceFW/fineweb-edu'
 FW_SUBSET       = 'sample-10BT'
 FW_MIN_CHARS    = 5_000
-FW_CACHE_FILE   = 'logs/fineweb_edu_300k_doc_cache.json'  # 300K doc cache (distinct from 100K)
+FW_CACHE_FILE   = 'benchmarks/logs/condm_fineweb_edu_doc_cache.json'
+# MAX_TRAIN_SEQS computed dynamically after model init:
+#   int(20 * n_params / (7 * MAX_SEQ_LEN))  → epoch 7 ≈ 100% Chinchilla-optimal
+MAX_TRAIN_SEQS = None   # set in main()
 
-# ── Passkey eval ──────────────────────────────────────────────────────────────
+# -- Passkey eval config -------------------------------------------------------
 
 PASSKEY_DISTANCES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1536]
-PASSKEY_TRIALS    = 5
+PASSKEY_TRIALS    = 50
 _PASSKEY_WORDS    = ['apple', 'banana', 'orange', 'cherry', 'grape',
                      'lemon', 'mango', 'peach', 'plum', 'berry']
 _FILLER_SENTENCE  = 'the weather was mild and the air was still . '
 _INTRO_TEMPLATE   = 'the secret word is {word} .'
 _RETRIEVAL_CUE    = 'the secret word is'
 
-# ── Save paths ────────────────────────────────────────────────────────────────
+# -- Save paths ----------------------------------------------------------------
 
-SAVE_DIR    = 'checkpoints/2048_condU_85m_checkpoints'
-RESULT_FILE = 'results/condU_85m_results.json'
+SAVE_DIR    = 'checkpoints/condU_37m_coeff'
+RESULT_FILE = 'logs/condU_37m_coeff_results.json'
 
-# ── condN offset set (44 offsets — shared across all condU/condM runs) ─────────
+# -- condN offset set ----------------------------------------------------------
 
 _DENSE_LOCAL_W     = 32
 _DYADIC_LONG_RANGE = [48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536]
@@ -101,8 +101,7 @@ _COND_N_OFFSETS    = sorted(set(range(0, _DENSE_LOCAL_W + 1)) |
                              set(_DYADIC_LONG_RANGE))
 assert len(_COND_N_OFFSETS) == 44
 
-# ── Triton kernel (V3 — Q-weighted scale gains) ────────────────────────────────
-# D=768, H=12 → HD=64 (power-of-2): Triton kernel runs natively with zero waste.
+# -- Triton kernel (V3 -- Q-weighted scale gains) ------------------------------
 
 import pathlib as _pl
 _kernel_dir = str(_pl.Path(__file__).parent.parent / 'kernels')
@@ -111,24 +110,32 @@ if _kernel_dir not in sys.path:
 
 from dsqg_attention_v3 import dsqg_attention_v3
 
-def dsqg_attention_backend(q, k, v, pos_bias, scale_embed):
-    return dsqg_attention_v3(q, k, v, pos_bias, scale_embed)
 
-
-# ── DSQGAttentionQW — Q-Weighted scale gains + IF amplifier ───────────────────
+# -- DSQGAttentionQW -- Q-Weighted scale gains + IF amplifier ------------------
 
 class DSQGAttentionQW(nn.Module):
     """
-    condU DSQG attention with Q-weighted scale gains and IF amplifier.
+    DSQG attention with three physics-derived modifications for condU.
 
-    Physics parameters:
-      pos_bias    [44, H]   — global learned frequency prior (ALiBi-style init)
-      scale_embed [44, HD]  — Q-matched-filter (zero init → pure pos_bias at ep0)
-      if_gain     [H]       — per-head IF amplifier (1.0 init)
+    Parameters owned explicitly here:
+      pos_bias    [44, H]   -- global learned frequency prior (log-linear init)
+      scale_embed [44, HD]  -- Q-matched-filter embeddings (zero init)
+      if_gain     [H]       -- per-head IF amplifier gain (1.0 init)
 
-    Huygens K/V injection: kv_inject=(k_delta, v_delta) added to K and V.
-    Q unchanged — local oscillator stays clean.
-    gate_bias=0.0 — correct design enforced explicitly.
+    Score computation (V3 kernel):
+      score[n,j,h] = Q[n,h] . K[n-dj,h] / sqrt(HD)    (content matching)
+                   + pos_bias[j, h]                      (global prior)
+                   + Q[n,h] . scale_embed[j] / sqrt(HD) (Q-weighted matched filter)
+
+    scale_embed zero init: starts as pure pos_bias (V2 behavior); learns
+    Q directions that predict each offset's usefulness. No bootstrap penalty --
+    global heads can develop via any gradient signal, not just long-range.
+
+    IF amplifier: out[h] = if_gain[h] * attn_out[h], applied before out_proj.
+    Global heads (weaker long-range signal) can learn higher gain.
+
+    Huygens K/V injection: kv_inject=(k_delta, v_delta) added to K and V only.
+    Q stays clean -- local oscillator must not be contaminated.
     """
     def __init__(self, embedding_dim, num_heads, seq_len=2048, dropout=0.1):
         super().__init__()
@@ -139,13 +146,20 @@ class DSQGAttentionQW(nn.Module):
         self.qkv_proj  = nn.Linear(embedding_dim, 3 * embedding_dim, bias=True)
         self.out_proj  = nn.Linear(embedding_dim, embedding_dim, bias=True)
         self.gate_proj = nn.Linear(embedding_dim, embedding_dim, bias=True)
-        nn.init.constant_(self.gate_proj.bias, 0.0)  # gate=0 correct design
+        nn.init.constant_(self.gate_proj.bias, 0.0)   # gate=0 correct design
 
+        # Global learned frequency prior: log-linear decay per head
         alphas     = torch.linspace(0.2, 2.0, num_heads)
         delta_vals = torch.tensor([math.log(1.0 + d) for d in _COND_N_OFFSETS],
                                   dtype=torch.float32)
         self.pos_bias    = nn.Parameter(-delta_vals.unsqueeze(1) * alphas.unsqueeze(0))
-        self.scale_embed = nn.Parameter(torch.zeros(44, HD))  # zero init
+
+        # Q-matched-filter embeddings: zero init = pure pos_bias at start
+        # Learns which Q directions predict high attention at each offset.
+        self.scale_embed = nn.Parameter(torch.zeros(44, HD))
+
+        # IF amplifier: per-head learnable gain, identity at init
+        # Global heads (weaker long-range signal) expected to learn gain > 1.
         self.if_gain     = nn.Parameter(torch.ones(num_heads))
 
         self.dropout = nn.Dropout(dropout)
@@ -160,13 +174,14 @@ class DSQGAttentionQW(nn.Module):
         k = k.view(B, N, H, HD).permute(0, 2, 1, 3).contiguous()
         v = v.view(B, N, H, HD).permute(0, 2, 1, 3).contiguous()
 
-        # Huygens K/V injection (Q unchanged — local oscillator stays clean)
+        # Huygens K/V injection (Q unchanged -- local oscillator stays clean)
         if kv_inject is not None:
             k_delta, v_delta = kv_inject
             k = k + k_delta
             v = v + v_delta
 
-        out = dsqg_attention_backend(q, k, v, self.pos_bias, self.scale_embed)
+        # V3 kernel: Q-weighted scale selection
+        out = dsqg_attention_v3(q, k, v, self.pos_bias, self.scale_embed)
 
         # IF amplifier: per-head gain before projection
         out = out * self.if_gain.view(1, H, 1, 1)
@@ -190,17 +205,18 @@ class DSQGAttentionQW(nn.Module):
         }
 
 
-# ── FullCausalAttention ────────────────────────────────────────────────────────
+# -- FullCausalAttention -------------------------------------------------------
 
 class FullCausalAttention(nn.Module):
     def __init__(self, embedding_dim, num_heads, dropout=0.1):
         super().__init__()
-        self.num_heads = num_heads
-        self.head_dim  = embedding_dim // num_heads
+        self.embedding_dim = embedding_dim
+        self.num_heads     = num_heads
+        self.head_dim      = embedding_dim // num_heads
         self.qkv_proj  = nn.Linear(embedding_dim, 3 * embedding_dim, bias=True)
         self.out_proj  = nn.Linear(embedding_dim, embedding_dim, bias=True)
         self.gate_proj = nn.Linear(embedding_dim, embedding_dim, bias=True)
-        nn.init.constant_(self.gate_proj.bias, 0.0)  # gate=0
+        nn.init.constant_(self.gate_proj.bias, 0.0)
         self.dropout_p = dropout
 
     def forward(self, x):
@@ -220,13 +236,14 @@ class FullCausalAttention(nn.Module):
                          p=self.dropout_p, training=self.training)
 
     def attn_summary(self):
-        return {'pos_bias_abs_mean': 0.0, 'pos_bias_abs_max': 0.0,
+        return {'type': 'full_causal',
+                'pos_bias_abs_mean': 0.0, 'pos_bias_abs_max': 0.0,
                 'pos_bias_mean_per_head': [0.0] * NUM_HEADS,
                 'scale_embed_abs_mean': 0.0, 'scale_embed_abs_max': 0.0,
                 'if_gain': [1.0] * NUM_HEADS}
 
 
-# ── FFN ───────────────────────────────────────────────────────────────────────
+# -- FFN -----------------------------------------------------------------------
 
 class FFN(nn.Module):
     def __init__(self, embedding_dim, ffn_dim, dropout=0.1):
@@ -238,23 +255,23 @@ class FFN(nn.Module):
         return self.fc2(self.drop(F.gelu(self.fc1(x))))
 
 
-# ── DSQGBlock ─────────────────────────────────────────────────────────────────
+# -- DSQGBlock -----------------------------------------------------------------
 
 class DSQGBlock(nn.Module):
     """
-    condU DSQGBlock with Huygens K/V injection.
-    interference=True adds the interference pooling block (Huygens K/V source).
+    condU: uses DSQGAttentionQW (V3 kernel + IF amplifier, NO band masking).
+    Huygens K/V injection retained. No grad checkpointing.
     """
     def __init__(self, embedding_dim, num_heads, ffn_dim, seq_len,
-                 dropout=0.1, interference=False):
+                 dropout=0.1, use_checkpoint=False, interference=False):
         super().__init__()
         self.interference = interference
         self.num_heads    = num_heads
         self.head_dim     = embedding_dim // num_heads
         self.norm1 = nn.LayerNorm(embedding_dim)
         self.norm2 = nn.LayerNorm(embedding_dim)
-        self.attn  = DSQGAttentionQW(embedding_dim, num_heads,
-                                     seq_len=seq_len, dropout=dropout)
+        self.attn  = DSQGAttentionQW(
+            embedding_dim, num_heads, seq_len=seq_len, dropout=dropout)
         self.ffn   = FFN(embedding_dim, ffn_dim, dropout)
 
         if interference:
@@ -266,17 +283,15 @@ class DSQGBlock(nn.Module):
     def forward(self, x):
         kv_inject = None
         if self.interference:
-            xi      = self.inter_norm(x)
+            xi = self.inter_norm(x)
             B, N, D = xi.shape
             H, HD   = self.num_heads, self.head_dim
             counts  = torch.arange(1, N + 1, device=xi.device,
                                    dtype=xi.dtype).view(1, N, 1)
             pool    = xi.cumsum(dim=1) / counts
             inter   = torch.sigmoid(self.inter_gate(xi)) * pool
-            k_delta = (self.inter_k_proj(inter)
-                       .view(B, N, H, HD).permute(0, 2, 1, 3).contiguous())
-            v_delta = (self.inter_v_proj(inter)
-                       .view(B, N, H, HD).permute(0, 2, 1, 3).contiguous())
+            k_delta = self.inter_k_proj(inter).view(B, N, H, HD).permute(0, 2, 1, 3).contiguous()
+            v_delta = self.inter_v_proj(inter).view(B, N, H, HD).permute(0, 2, 1, 3).contiguous()
             kv_inject = (k_delta, v_delta)
 
         x = x + self.attn(self.norm1(x), kv_inject=kv_inject)
@@ -284,7 +299,7 @@ class DSQGBlock(nn.Module):
         return x
 
 
-# ── FullAttentionBlock ────────────────────────────────────────────────────────
+# -- FullAttentionBlock --------------------------------------------------------
 
 class FullAttentionBlock(nn.Module):
     def __init__(self, embedding_dim, num_heads, ffn_dim, dropout=0.1):
@@ -300,9 +315,9 @@ class FullAttentionBlock(nn.Module):
         return x
 
 
-# ── CondUTransformer ──────────────────────────────────────────────────────────
+# -- CondMTransformer ----------------------------------------------------------
 
-class CondUTransformer(nn.Module):
+class CondMTransformer(nn.Module):
     def __init__(self, vocab_size, embedding_dim, num_layers, num_heads,
                  ffn_dim, seq_len, full_attn_layer=FULL_ATTN_LAYER,
                  interference_interval=INTERFERENCE, dropout=0.1):
@@ -320,12 +335,12 @@ class CondUTransformer(nn.Module):
             else:
                 blocks.append(DSQGBlock(
                     embedding_dim, num_heads, ffn_dim, seq_len,
-                    dropout=dropout,
+                    dropout=dropout, use_checkpoint=False,
                     interference=(i % interference_interval == interference_interval - 1)))
         self.blocks = nn.ModuleList(blocks)
         self.norm   = nn.LayerNorm(embedding_dim)
         self.out    = nn.Linear(embedding_dim, vocab_size, bias=False)
-        self.out.weight = self.embedding.weight  # tied embeddings
+        self.out.weight = self.embedding.weight
         self._init_weights()
 
     def _init_weights(self):
@@ -335,10 +350,11 @@ class CondUTransformer(nn.Module):
                 if m.bias is not None: nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, 0, 0.02)
-        # Enforce gate=0 on all gate_proj layers (correct design)
+        # gate bias = 0.0 on all gate_proj layers (gate=0 correct design)
         for m in self.modules():
             if hasattr(m, 'gate_proj') and isinstance(m.gate_proj, nn.Linear):
                 nn.init.constant_(m.gate_proj.bias, 0.0)
+        # scale_embed: already zeros from DSQGAttentionQW.__init__ (no _init_weights touch needed)
 
     def forward(self, idx):
         B, N = idx.shape
@@ -376,7 +392,7 @@ class CondUTransformer(nn.Module):
         }
 
 
-# ── Data utilities ────────────────────────────────────────────────────────────
+# -- Data utilities (unchanged from condM/condT) -------------------------------
 
 class BPETokenizerWrapper:
     def __init__(self, tok): self.tokenizer = tok
@@ -394,7 +410,7 @@ def load_data(num_docs=NUM_DOCS):
         print(f'  Loaded {len(texts):,} docs from cache')
     else:
         from datasets import load_dataset
-        print(f'Loading FineWeb-Edu ({FW_SUBSET}) — seeking {num_docs:,} docs...')
+        print(f'Loading FineWeb-Edu ({FW_SUBSET}) -- seeking {num_docs:,} docs...')
         ds = load_dataset(FW_DATASET_NAME, name=FW_SUBSET,
                           split='train', streaming=True)
         texts = []; examined = 0
@@ -407,18 +423,13 @@ def load_data(num_docs=NUM_DOCS):
             if len(texts) >= num_docs: break
         os.makedirs(os.path.dirname(FW_CACHE_FILE), exist_ok=True)
         with open(FW_CACHE_FILE, 'w') as fp:
-            json.dump(texts, fp)
+            _json.dump(texts, fp)
         print(f'  Cached {len(texts):,} docs')
-    # Shuffle with fixed seed so val/test are drawn from the same distribution
-    # as training — NOT from the stream tail which can be OOD.
-    import random as _random
-    _random.seed(42)
-    shuffled = texts[:]
-    _random.shuffle(shuffled)
+    n = len(texts)
     return {
-        'val':   shuffled[:2500],
-        'test':  shuffled[2500:5000],
-        'train': shuffled[5000:],
+        'train': texts[:int(n * 0.95)],
+        'val':   texts[int(n * 0.95) : int(n * 0.95) + 2500],
+        'test':  texts[int(n * 0.95) + 2500 : int(n * 0.95) + 5000],
     }
 
 
@@ -441,8 +452,7 @@ def evaluate(model, data, batch_size, device):
     for i in range(0, len(data) - batch_size + 1, batch_size):
         x = data[i:i + batch_size, :-1].to(device)
         y = data[i:i + batch_size,  1:].to(device)
-        with torch.amp.autocast('cuda'):   # match training precision
-            logits = model(x)
+        logits = model(x)
         loss   = F.cross_entropy(
             logits.reshape(-1, logits.size(-1)), y.reshape(-1))
         total_loss   += loss.item() * y.numel()
@@ -459,8 +469,7 @@ def generate(model, tokenizer, prompts, device, max_new=150,
                            dtype=torch.long, device=device)
         with torch.no_grad():
             for _ in range(max_new):
-                with torch.amp.autocast('cuda'):   # match training precision
-                    logits = model(ids[:, -MAX_SEQ_LEN:])
+                logits      = model(ids[:, -MAX_SEQ_LEN:])
                 logits_last = logits[0, -1]
                 if temperature <= 0.01:
                     next_id = logits_last.argmax()
@@ -515,8 +524,7 @@ def passkey_accuracy(model, tokenizer, device):
             full_seq = intro_ids + filler[:d] + cue_ids
             if len(full_seq) >= MAX_SEQ_LEN: continue
             ids    = torch.tensor([full_seq], dtype=torch.long, device=device)
-            with torch.amp.autocast('cuda'):   # match training precision
-                logits = model(ids)[:, -1, :]
+            logits = model(ids)[:, -1, :]
             cand_ids = [(tokenizer.encode(' ' + w) or tokenizer.encode(w))[0]
                         for w in [target] + others[:9]]
             correct  += int(([target] + others[:9])[logits[0][cand_ids].argmax().item()] == target)
@@ -525,14 +533,12 @@ def passkey_accuracy(model, tokenizer, device):
     return results
 
 
-# ── Training loop ──────────────────────────────────────────────────────────────
+# -- Training loop -------------------------------------------------------------
 
 def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
     os.makedirs(SAVE_DIR, exist_ok=True)
-
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=LR, weight_decay=0.1, betas=(0.9, 0.95))
-
     total_steps = NUM_EPOCHS * math.ceil(
         len(train_data) / BATCH_SIZE / GRAD_ACCUM)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -618,8 +624,8 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
               f'most-local=h{most_local} most-global=h{most_global}')
         print(f'  scale_embed:   |mean|={ss["scale_embed_abs_mean"]:.4f} '
               f'|max|={ss["scale_embed_abs_max"]:.4f}')
-        gains    = ss['if_gain']
-        gain_str = '  '.join(f'h{h}:{gains[h]:.3f}' for h in range(NUM_HEADS))
+        gains = ss['if_gain']
+        gain_str = '  '.join(f'h{h}:{gains[h]:.2f}' for h in range(NUM_HEADS))
         print(f'  IF gains:      {gain_str}')
 
         print('  -- Generation samples (greedy) --')
@@ -647,17 +653,14 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
         })
         sys.stdout.flush()
 
-    # ── Final evaluation ───────────────────────────────────────────────────────
+    # -- Final evaluation ------------------------------------------------------
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, 'best.pt'),
                                      weights_only=True))
     test_loss = evaluate(model, test_data, BATCH_SIZE, device)
     test_ppl  = math.exp(min(test_loss, 20))
-
-    print(f'\n  condU 85M TEST: PPL {test_ppl:.3f} | Loss {test_loss:.4f}')
-    print(f'  condM 85M reference: 36.042 PPL | delta = {test_ppl - 36.042:+.3f}')
-    print(f'  condU 35M reference: 38.542 PPL | delta = {test_ppl - 38.542:+.3f}')
-    print(f'  Standard 85M ref:    39.447 PPL | delta = {test_ppl - 39.447:+.3f}')
-    print(f'  condM 27M reference: 44.500 PPL | delta = {test_ppl - 44.500:+.3f}')
+    print(f'\n  condU TEST: PPL {test_ppl:.3f} | Loss {test_loss:.4f}')
+    print(f'  I3G0 reference:  52.948 PPL | delta = {test_ppl - 52.948:+.3f}')
+    print(f'  condM reference: 54.529 PPL | delta = {test_ppl - 54.529:+.3f}')
 
     print('\n  -- Temperature sweep (best checkpoint) --')
     sweep_results = {}
@@ -677,41 +680,31 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
           f'({above50_final}/{len(pk_final)} distances >50%)')
     parts = [f'd={d}:{int(pk_final[d]*100)}%' for d in PASSKEY_DISTANCES]
     print('  ' + '  '.join(parts))
-    print(f'  condM 85M reference: 83.3% passkey')
-    print(f'  condU 35M reference: 85.0% passkey')
-    print(f'  condM 27M reference: 83.3% passkey')
+    print(f'  I3G0 reference:  53.3% passkey')
+    print(f'  condM reference: 83.3% passkey')
 
     ss = model.attn_summary()
-    gains    = ss['if_gain']
+    gains = ss['if_gain']
     gain_str = '  '.join(f'h{h}:{gains[h]:.3f}' for h in range(NUM_HEADS))
     print(f'\n  Final IF gains: {gain_str}')
     print(f'  Final scale_embed: |mean|={ss["scale_embed_abs_mean"]:.4f} '
           f'|max|={ss["scale_embed_abs_max"]:.4f}')
 
     results = {
-        'experiment':              'condU_85m_qweighted_scale',
+        'experiment':              'condU_qweighted_scale',
         'kernel':                  'dsqg_attention_v3',
-        'architecture':            f'condU: 7xDSQGQW + 1xFullAttn (layer {FULL_ATTN_LAYER})',
-        'embedding_dim':           EMBEDDING_DIM,
-        'num_heads':               NUM_HEADS,
-        'head_dim':                EMBEDDING_DIM // NUM_HEADS,
-        'ffn_dim':                 FFN_DIM,
-        'num_layers':              NUM_LAYERS,
-        'physics':                 ['q_weighted_scale_gains', 'if_amplifier',
-                                    'huygens_kv_injection'],
+        'changes_vs_condT':        ['drop_band_masking', 'add_scale_embed_v3',
+                                    'retain_if_amplifier', 'retain_huygens_kv'],
         'final_test_ppl':          test_ppl,
         'final_passkey_mean':      pk_final_mean,
         'final_passkey_by_d':      {str(d): v for d, v in pk_final.items()},
         'per_epoch':               per_epoch_results,
         'temperature_sweep':       sweep_results,
         'attn_summary':            ss,
-        'condm_85m_ref_ppl':       36.042,
-        'condm_85m_ref_passkey':   0.833,
-        'condu_35m_ref_ppl':       38.542,
-        'condu_35m_ref_passkey':   0.850,
-        'standard_85m_ref_ppl':    39.447,
-        'condm_27m_ref_ppl':       44.500,
-        'condm_27m_ref_passkey':   0.833,
+        'i3g0_reference_ppl':      52.948,
+        'i3g0_reference_passkey':  0.533,
+        'condm_reference_ppl':     54.529,
+        'condm_reference_passkey': 0.833,
     }
     os.makedirs(os.path.dirname(RESULT_FILE), exist_ok=True)
     with open(RESULT_FILE, 'w') as fp:
@@ -720,45 +713,31 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
     return results
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# -- Main ----------------------------------------------------------------------
 
 def main():
-    torch.set_float32_matmul_precision('high')   # enable TF32 on Ampere/Hopper
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print('=' * 70)
-    print('  condU 85M — Q-Weighted Scale Gains + IF Amplifier + Huygens K/V')
-    print(f'  D={EMBEDDING_DIM}, H={NUM_HEADS}, d_head={EMBEDDING_DIM//NUM_HEADS}, '
-          f'L={NUM_LAYERS}, FFN={FFN_DIM}')
-    print(f'  Full attention at layer {FULL_ATTN_LAYER} (0-indexed)')
-    print(f'  Layer types: ' +
-          ', '.join('FULL' if i == FULL_ATTN_LAYER
-                    else ('DSQG+INT' if i % INTERFERENCE == INTERFERENCE - 1 else 'DSQG')
-                    for i in range(NUM_LAYERS)))
+    print('  condU -- Q-Weighted Scale Gains (13M, FineWeb-Edu)')
     print('=' * 70)
     if torch.cuda.is_available():
         print(f'  GPU: {torch.cuda.get_device_name(0)}  '
               f'({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)')
-    print(f'  Kernel: dsqg_attention_v3 (HD={EMBEDDING_DIM//NUM_HEADS}, '
-          f'BLOCK_HD={EMBEDDING_DIM//NUM_HEADS}, scale_embed [44,{EMBEDDING_DIM//NUM_HEADS}])')
-    print(f'  Physics: QW scale gains + IF amplifier + Huygens K/V injection')
-    print(f'  Architecture: INTERFERENCE={INTERFERENCE}, gate=0, '
-          f'1 FullAttn @ layer {FULL_ATTN_LAYER}')
-    print(f'  References: condM_85M=36.042/83.3%pk | condU_35M=38.542/85.0%pk '
-          f'| Standard_85M=39.447')
+    print(f'  Kernel: dsqg_attention_v3 (scale_embed [44,HD], zero init)')
+    print(f'  Changes vs condT: drop band masking -> soft Q-weighted gains')
+    print(f'  Retained: Huygens K/V injection, IF amplifier')
+    print(f'  Architecture: INTERFERENCE=3, gate=0, 1 FullAttn @ layer 5')
+    print(f'  References: I3G0=52.948 PPL/53.3% pk | condM=54.529/83.3%')
 
     os.makedirs('logs', exist_ok=True)
-    os.makedirs('results', exist_ok=True)
 
     splits = load_data(NUM_DOCS)
-
     _script_dir     = os.path.dirname(os.path.abspath(__file__))
-    _repo_root      = os.path.dirname(_script_dir)   # one level up from train/
     _tok_candidates = [
-        os.path.join(_repo_root,   'results',              '2048_condI_tokenizer.json'),
-        os.path.join(_repo_root,   'benchmarks', 'results', '2048_condI_tokenizer.json'),
-        os.path.join(_script_dir,  'results',              '2048_condI_tokenizer.json'),
-        os.path.join(_script_dir,  '2048_condI_tokenizer.json'),
-        'results/2048_condI_tokenizer.json',
+        os.path.join(_script_dir, '..', 'results', '2048_condI_tokenizer.json'),
+        os.path.join(_script_dir, 'results', '2048_condI_tokenizer.json'),
+        os.path.join(_script_dir, '2048_condI_tokenizer.json'),
+        os.path.join(_script_dir, '..', 'benchmarks', 'results', '2048_condI_tokenizer.json'),
     ]
     tok_path = next((p for p in _tok_candidates if os.path.exists(p)), None)
     if tok_path:
@@ -771,11 +750,11 @@ def main():
     _encoded_cache = 'logs/fineweb_encoded_2048.pt'
     if os.path.exists(_encoded_cache):
         print(f'Loading pre-encoded dataset from {_encoded_cache} ...')
-        _cache     = torch.load(_encoded_cache, weights_only=True)
+        _cache = torch.load(_encoded_cache, weights_only=True)
         train_data = _cache['train']
         val_data   = _cache['val']
         test_data  = _cache['test']
-        # No subsetting yet — defer until after model init (Chinchilla-normalized)
+        # No subsetting yet — defer until after model init
         print(f'  train: {len(train_data):,}  val: {len(val_data):,}  '
               f'test: {len(test_data):,} seqs (from cache, pre-subset)')
     else:
@@ -783,11 +762,8 @@ def main():
         train_data = encode_split(splits['train'], tokenizer, MAX_SEQ_LEN, 'Train')
         val_data   = encode_split(splits['val'],   tokenizer, MAX_SEQ_LEN, 'Val')
         test_data  = encode_split(splits['test'],  tokenizer, MAX_SEQ_LEN, 'Test')
-        torch.save({'train': train_data, 'val': val_data, 'test': test_data},
-                   _encoded_cache)
-        print(f'  Saved encoded cache → {_encoded_cache}')
 
-    model = CondUTransformer(
+    model = CondMTransformer(
         vocab_size            = tokenizer.vocab_size(),
         embedding_dim         = EMBEDDING_DIM,
         num_layers            = NUM_LAYERS,
@@ -799,35 +775,24 @@ def main():
     ).to(device)
 
     n_params    = model.param_count()
-    layer_types = []
-    for i in range(NUM_LAYERS):
-        if i == FULL_ATTN_LAYER:
-            layer_types.append('FULL')
-        elif i % INTERFERENCE == INTERFERENCE - 1:
-            layer_types.append('DSQG+INT')
-        else:
-            layer_types.append('DSQG')
-    print(f'\ncondU 85M: {n_params:,} parameters')
+    layer_types = ['FULL' if i == FULL_ATTN_LAYER else 'DSQG'
+                   for i in range(NUM_LAYERS)]
+    print(f'\ncondU: {n_params:,} parameters')
     print(f'  Layer types: {layer_types}')
 
-    # Chinchilla-normalized subsetting: epoch 7 ≈ 100% Chinchilla-optimal
-    MAX_TRAIN_SEQS = int(20 * n_params / (7 * MAX_SEQ_LEN))
-    print(f'  Chinchilla max seqs/epoch: {MAX_TRAIN_SEQS:,}')
-    print(f'  (= 20 × {n_params:,} params / (7 × {MAX_SEQ_LEN} tokens))')
+    # Fixed training budget: 52,716 seqs matches all prior condU/condM 13M runs.
+    # (Chinchilla-optimal for 13M would be ~19,611 seqs/epoch but that reduces
+    # data diversity — 52,716 seqs with 10 epochs is intentional overtraining
+    # consistent with all other 13M results in the ablation series.)
+    MAX_TRAIN_SEQS = 52_716
     if len(train_data) > MAX_TRAIN_SEQS:
         idx        = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
         train_data = train_data[idx]
     print(f'  train: {len(train_data):,}  val: {len(val_data):,}  '
-          f'test: {len(test_data):,} seqs (after Chinchilla subsetting)')
+          f'test: {len(test_data):,} seqs (capped to {MAX_TRAIN_SEQS:,})')
 
     if not causality_check(model, device):
         return
-
-    # torch.compile — mode='default' (not reduce-overhead; CUDA graphs conflict
-    # with Triton V3 kernel's save_for_backward tensors)
-    print('  Compiling model with torch.compile (mode=default)...')
-    model = torch.compile(model, mode='default')
-    print('  Compile done.')
 
     train(model, train_data, val_data, test_data, tokenizer, device=device)
 
