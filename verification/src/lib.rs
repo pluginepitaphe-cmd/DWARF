@@ -58,3 +58,6 @@ pub mod kalman_predict_step;        // Kalman predict step: dynamic gain preserv
 pub mod h0_saturation;              // h0 entropy saturation + energy conservation: why h1 > h0 in pure DSQG
 pub mod advanced_annealing;         // Dispersive kernel, power-law/matched-filter annealing, PLL adaptive schedule
 pub mod coupling_stability;         // Pre-flight K/V vs residual coupling check; calibrated threshold = 24,577
+pub mod movt_orthogonal_transport;  // MOVT: multi-plane Givens rotation value transport (generalises condU-phase r=1)
+pub mod qk_ovt;                     // QK-OVT: content-dependent orthogonal value transport (fifth DSQG mechanism)
+pub mod npci;                       // NPCI: norm-preserving coupled injection (replaces additive K/V injection)
