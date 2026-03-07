@@ -36,7 +36,7 @@ Baseline references:
   standard 85M:   39.447 PPL, 96.7% passkey
 
 Run:
-  cd /home/dlewis3/Desktop/AI/DWARF
+
   CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u train/train_2048_condU_v5_13m.py \
     2>&1 | tee benchmarks/logs/condU_v5_13m_run.log
 """
