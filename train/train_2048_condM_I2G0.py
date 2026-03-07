@@ -82,7 +82,7 @@ assert len(_COND_N_OFFSETS) == 44
 # ── Triton kernel ──────────────────────────────────────────────────────────────
 
 import pathlib as _pl
-_kernel_dir = str(_pl.Path.home() / '.openclaw/workspace/kernels')
+_kernel_dir = str(_pl.Path.home() / 'kernels')
 if _kernel_dir not in sys.path:
     sys.path.insert(0, _kernel_dir)
 from dsqg_attention_v2 import DSQGAttentionN_Fused as DSQGAttentionN

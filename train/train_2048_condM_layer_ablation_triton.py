@@ -68,7 +68,7 @@ assert len(_COND_N_OFFSETS) == 44
 
 # ─── Triton V2 kernel replaces PyTorch DSQGAttentionN ───────────────────────
 import pathlib as _pl, sys as _sys
-_sys.path.insert(0, str(_pl.Path.home() / '.openclaw/workspace/kernels'))
+_sys.path.insert(0, str(_pl.Path.home() / 'kernels'))
 from dsqg_attention_v2 import DSQGAttentionN_Fused as DSQGAttentionN
 # ─────────────────────────────────────────────────────────────────────────────
 

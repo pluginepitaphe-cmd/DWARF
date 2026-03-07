@@ -18,10 +18,6 @@ Memory footprint (B=128, H=8, N=2047, HD=32):
   Naive PyTorch K_all+V_all:  ~27.5 GB/step (5 DSQG layers)
   V2 saved state:              ~142 MB  (LSE 8.4 MB + out 134 MB)
 
-Testing:
-  .venv/bin/python3 ~/.openclaw/workspace/kernels/dsqg_attention_v2.py
-  .venv/bin/python3 ~/.openclaw/workspace/kernels/dsqg_attention_v2.py bench
-
 Integration (one line in training script after imports):
   from dsqg_attention_v2 import DSQGAttentionN_Fused as DSQGAttentionN
 """
