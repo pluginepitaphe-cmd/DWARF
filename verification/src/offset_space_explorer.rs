@@ -473,6 +473,124 @@ mod tests {
         assert_eq!(canonical_sparse(1).len(), 1);
     }
 
+    // ── d41s3 / d41s5 specific constructors ──────────────────────────────────
+
+    /// d41s3: dense 0-41, sparse [48,128,384] — the winning configuration (80% passkey, 52.457 PPL)
+    pub fn offsets_d41s3() -> Vec<usize> {
+        build_offset_set(41, &[48, 128, 384])
+    }
+
+    /// d41s5: dense 0-41, sparse [48,128,384,768,1536] — the negative result (41.7% passkey, 52.677 PPL)
+    pub fn offsets_d41s5() -> Vec<usize> {
+        build_offset_set(41, &[48, 128, 384, 768, 1536])
+    }
+
+    #[test]
+    fn d41s3_vs_d41s5_coverage_analysis() {
+        let s3 = offsets_d41s3();
+        let s5 = offsets_d41s5();
+        let m3 = compute_metrics(&s3);
+        let m5 = compute_metrics(&s5);
+
+        println!("\n=== d41s3 vs d41s5: Path-Count Coverage Analysis ===");
+        println!();
+        println!(
+            "  {:>6}  {:>8}  {:>8}   {:>8}  {:>8}   {:>9}  {:>9}",
+            "dist", "s3 paths", "s5 paths", "s3 score", "s5 score", "s3/s5 paths", "s3/s5 score"
+        );
+        println!("  {}", "-".repeat(74));
+        for i in 0..PASSKEY_DISTANCES.len() {
+            let d = PASSKEY_DISTANCES[i];
+            let p3 = m3.paths_by_distance[i];
+            let p5 = m5.paths_by_distance[i];
+            let sc3 = m3.scores_by_distance[i];
+            let sc5 = m5.scores_by_distance[i];
+            let ratio_p = if p5 == 0 { f64::INFINITY } else { p3 as f64 / p5 as f64 };
+            let ratio_s = if sc5 == 0.0 { f64::INFINITY } else { sc3 / sc5 };
+            println!(
+                "  d={:<5}  {:>8}  {:>8}   {:>8.4}  {:>8.4}   {:>9.3}  {:>9.3}",
+                d, p3, p5, sc3, sc5, ratio_p, ratio_s
+            );
+        }
+        println!();
+        println!("  d41s3 total coverage : {:.4}  (J={})", m3.coverage_score, m3.budget_used);
+        println!("  d41s5 total coverage : {:.4}  (J={})", m5.coverage_score, m5.budget_used);
+        println!("  d41s3 reliable depth : {}", m3.reliable_retrieval_depth);
+        println!("  d41s5 reliable depth : {}", m5.reliable_retrieval_depth);
+        println!("  per-J efficiency s3  : {:.4}", m3.coverage_score / m3.budget_used as f64);
+        println!("  per-J efficiency s5  : {:.4}", m5.coverage_score / m5.budget_used as f64);
+        println!();
+        // The key claim: d41s3 should have equal or better per-distance scores despite lower J,
+        // because d41s5's extra offsets (768, 1536) do not contribute to short-distance paths
+        // but DO consume multi-hop slots at long distances, potentially adding noise paths.
+        let s3_short: f64 = m3.scores_by_distance[..6].iter().sum(); // d=1..32
+        let s5_short: f64 = m5.scores_by_distance[..6].iter().sum();
+        println!("  Short-range (d=1..32) total score  s3={:.4}  s5={:.4}", s3_short, s5_short);
+        // d41s5 may have MORE paths to long distances through 768/1536 direct access
+        let s3_long: f64 = m3.scores_by_distance[6..].iter().sum(); // d=64..1536
+        let s5_long: f64 = m5.scores_by_distance[6..].iter().sum();
+        println!("  Long-range (d=64..1536) total score s3={:.4}  s5={:.4}", s3_long, s5_long);
+    }
+
+    #[test]
+    fn d41s3_optimal_3sparse_search() {
+        // Exhaustively search all C(11,3) = 165 combinations of 3 sparse tiers from SPARSE_POOL
+        // with dense=41.  Print the top-10 by coverage_score.
+        use std::collections::BinaryHeap;
+        use std::cmp::Ordering;
+
+        #[derive(Debug)]
+        struct Candidate {
+            score: f64,
+            reliable_depth: usize,
+            sparse: [usize; 3],
+        }
+        impl PartialEq for Candidate { fn eq(&self, o: &Self) -> bool { self.score == o.score } }
+        impl Eq for Candidate {}
+        impl PartialOrd for Candidate {
+            fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) }
+        }
+        impl Ord for Candidate {
+            fn cmp(&self, o: &Self) -> Ordering {
+                self.score.partial_cmp(&o.score).unwrap_or(Ordering::Equal)
+            }
+        }
+
+        let pool = SPARSE_POOL;
+        let n = pool.len();
+        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+
+        for i in 0..n {
+            for j in (i+1)..n {
+                for k in (j+1)..n {
+                    let sparse = [pool[i], pool[j], pool[k]];
+                    let offsets = build_offset_set(41, &sparse);
+                    let m = compute_metrics(&offsets);
+                    heap.push(Candidate {
+                        score: m.coverage_score,
+                        reliable_depth: m.reliable_retrieval_depth,
+                        sparse,
+                    });
+                }
+            }
+        }
+
+        println!("\n=== Top-10 3-sparse configurations (dense=41) ===");
+        println!("  {:>10}  {:>15}  {:>30}", "coverage", "reliable_depth", "sparse");
+        println!("  {}", "-".repeat(60));
+        let top: Vec<_> = heap.into_sorted_vec().into_iter().rev().take(10).collect();
+        for (rank, c) in top.iter().enumerate() {
+            let marker = if c.sparse == [48, 128, 384] { " ← d41s3" } else { "" };
+            println!("  #{:<2}  {:.4}  {:>6}              [{:4},{:4},{:4}]{}",
+                rank+1, c.score, c.reliable_depth, c.sparse[0], c.sparse[1], c.sparse[2], marker);
+        }
+        println!();
+        // Explicitly score the d41s3 combination
+        let d41s3_offsets = build_offset_set(41, &[48, 128, 384]);
+        let d41s3_m = compute_metrics(&d41s3_offsets);
+        println!("  d41s3 [48,128,384] coverage={:.4}  reliable_depth={}", d41s3_m.coverage_score, d41s3_m.reliable_retrieval_depth);
+    }
+
     #[test]
     fn condu_can_reach_all_passkey_distances() {
         let o = offsets_condu();

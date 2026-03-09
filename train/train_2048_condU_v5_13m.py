@@ -28,7 +28,7 @@ Three new mechanisms on top of condU V3 kernel:
 Architecture (matches condU 13M paper baseline):
   EMBEDDING_DIM = 256, NUM_LAYERS = 6, NUM_HEADS = 8, FFN_DIM = 1024
   INTERFERENCE = 3, FULL_ATTN_LAYER = 5
-  ~14M parameters | Chinchilla at ~ep7 (MAX_TRAIN_SEQS=19,600) | coupling = 8*256*6 = 12,288 ✓
+  ~14M parameters | ~3.86× Chinchilla over 10 epochs (MAX_TRAIN_SEQS=52,716, matches V3 13M) | coupling = 8*256*6 = 12,288 ✓
 
 Baseline references:
   condU V3 13M:   52.237 PPL, 43.3% passkey
@@ -786,7 +786,7 @@ def main():
     print(f'    npci_theta_k [{NUM_HEADS}]       = {NUM_HEADS:,}       (NPCI, zero-init)')
     print(f'    npci_theta_v [{NUM_HEADS}]       = {NUM_HEADS:,}       (NPCI, zero-init)')
 
-    MAX_TRAIN_SEQS = 19_600   # 19,600 × 2048 = 40.1M tok/epoch → Chinchilla at ep7.0 for 14M params
+    MAX_TRAIN_SEQS = 52_716   # 52,716 × 2048 = 107.9M tok/epoch → ~3.86× Chinchilla over 10 epochs (matches V3 13M baseline)
     if len(train_data) > MAX_TRAIN_SEQS:
         idx        = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
         train_data = train_data[idx]

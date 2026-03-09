@@ -1,44 +1,55 @@
 """
-condX — Huygens Bypass for Full Attention (13M, FineWeb-Edu)
+condX-v2 35M — Learnable Bypass Gate, scaled to ~35M (FineWeb-Edu)
 
-Hypothesis:
-  condV (Kalman-EMA + KdV + AGC interference) improves PPL but collapses
-  passkey (36.7% vs condU 38.3%). The Huygens K/V injection in DSQG blocks
-  shapes the residual stream in a way that contaminates the signal reaching
-  the full attention layer, making content-addressed retrieval harder.
+Relationship to condX 13M:
+  condX 13M showed a striking pattern at 13M scale:
+    - Consistently better PPL than condV (+3 PPL) AND passkey developing simultaneously
+    - Hard cliff at d=64: retrieval plateau at d=1-32, 0% at d≥64
+    - PPL beats condV AND condU v3 baselines (51.5 at ep7, heading below 52)
+    - Passkey migrates one tier per ~2 epochs (d=32→d=64 between ep5 and ep6)
 
-  The "local oscillator stays clean" principle already applies WITHIN each
-  DSQG attention (Q is never Huygens-injected). condX applies this same
-  principle AT THE MACRO LEVEL: the full attention layer's Q computation
-  uses a "clean residual" saved BEFORE the Huygens-processing interference
-  block, while K and V still use the full (Huygens-enriched) residual stream.
+  condU exhibited the same pattern at 13M (modest passkey), then exploded:
+    condU 13M: 52.237 PPL / 38.3% passkey
+    condU 25M: 43.434 PPL / 69.2% passkey
+    condU 35M: 38.293 PPL /  90.0% passkey  ← direct comparison target
+
+  Architecture change from condX 35M: replaces hard bypass with learnable gate,
+  initialized at bypass_alpha=-10.0 (gate≈0.000045 — effectively pure contaminated Q).
+
+Motivation from 13M gate sweep experiments (March 8, 2026):
+  Both condX (hard bypass, gate=1.0 training) and condX-v2 (learnable gate, converged
+  at gate≈0.10) sweep results showed gate=0 is strictly optimal for passkey:
+    condX   checkpoint: peak 46.7% at gate=0 → 31.7% at gate=1.0 (monotonic decrease)
+    condX-v2 checkpoint: peak 54.2% at gate=0 → 20.0% at gate=1.0 (monotonic decrease)
+  The bypass costs ~20-30pp passkey regardless of what the weights were trained on.
+  "Contamination" by the Huygens field IS the reference-beam learning mechanism.
+
+  Starting at bypass_alpha=-10 (gate≈0) lets the model:
+    1. Develop holographic retrieval from epoch 1 (pure contaminated Q, condV-like)
+    2. Allow the gradient to discover whether any clean Q blend is useful at 35M
+    3. If gradient stays near -10: confirms condV is ceiling at 35M
+    4. If gradient nudges positive: 35M equilibrium differs from 13M (interesting)
 
 Architecture:
-  Identical to condV (Kalman-EMA + KdV + AGC) with one change:
+  condX-v2 13M architecture scaled to 35M:
+    EMBEDDING_DIM = 512  (was 256)
+    FFN_DIM       = 2048 (was 1024)
+    NUM_HEADS     = 8    (same)
+    NUM_LAYERS    = 6    (same)
+    INTERFERENCE  = 3    (same)
+    FULL_ATTN_LAYER = 5  (same)
+    bypass_alpha init = -10.0  (gate≈0 — vs -3.0 in condX-v2 13M)
 
-  After layer 1 (last non-interference block before the layer-2 interference
-  block), we save x_clean. At layer 5 (full attention), Q is projected from
-  x_clean, K and V from the normal residual x.
+  MAX_TRAIN_SEQS is computed dynamically in main() to land Chinchilla at ep7.
 
-  This gives the full attention layer an uncontaminated query perspective
-  ("what am I looking for at this position?") while still benefiting from
-  the Huygens-enriched context in K and V.
-
-  Diagnostics added vs condV:
-    - clean_norm / full_norm: L2 norms of clean vs contaminated residual
-      entering full attention (tracks how much they diverge)
-    - q_cosim: cosine similarity of Q computed from clean vs full residual
-      (0 = totally different, 1 = identical — convergence means bypass irrelevant)
-    - q_delta_norm: L2 of (Q_clean - Q_full), absolute divergence
-
-Baseline references (condV, same 13M architecture):
-  condV:  52.207 PPL / 36.7% passkey (Huygens disrupts full-attn retrieval)
-  condU:  52.237 PPL / 38.3% passkey (V3 kernel baseline)
-  condM:  54.529 PPL / 83.3% passkey
+Baseline references:
+  condU 35M:    38.293 PPL / 90.0% passkey  ← direct target
+  condU v5 38M: 39.998 PPL / 98.3% passkey  ← upper bound reference
+  condX-v2 13M: 52.685 PPL / 45.0% passkey  (gate=0 sweep: 54.2%)
 
 Run (4090):
-  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u train/train_2048_condX.py \\
-    2>&1 | tee benchmarks/logs/condX_run.log
+  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u train/train_2048_35m_condX_v2.py \\
+    2>&1 | tee benchmarks/logs/condX_v2_35m_run.log
 """
 
 import json, math, os, sys, time
@@ -56,10 +67,10 @@ LR              = 3e-4
 MAX_SEQ_LEN     = 2048
 NUM_DOCS        = 100_000
 
-EMBEDDING_DIM   = 256
+EMBEDDING_DIM   = 512
 NUM_LAYERS      = 6
 NUM_HEADS       = 8
-FFN_DIM         = 1024
+FFN_DIM         = 2048
 INTERFERENCE    = 3
 FULL_ATTN_LAYER = 5
 
@@ -69,7 +80,7 @@ FW_DATASET_NAME = 'HuggingFaceFW/fineweb-edu'
 FW_SUBSET       = 'sample-10BT'
 FW_MIN_CHARS    = 5_000
 FW_CACHE_FILE   = 'benchmarks/logs/condm_fineweb_edu_doc_cache.json'
-MAX_TRAIN_SEQS  = 52_716   # same as condV — Chinchilla at ep ~2.6
+MAX_TRAIN_SEQS  = None     # computed dynamically in main() → Chinchilla at ep 7
 
 # ── Passkey eval ───────────────────────────────────────────────────────────────
 
@@ -83,8 +94,8 @@ _RETRIEVAL_CUE    = 'the secret word is'
 
 # ── Save paths ─────────────────────────────────────────────────────────────────
 
-SAVE_DIR    = 'checkpoints/condX'
-RESULT_FILE = 'benchmarks/logs/condX_results.json'
+SAVE_DIR    = 'checkpoints/condX_v2_35m'
+RESULT_FILE = 'benchmarks/logs/condX_v2_35m_results.json'
 
 # ── Offset set (condN / condU / condV identical) ───────────────────────────────
 
@@ -178,39 +189,55 @@ class DSQGAttentionQW(nn.Module):
 
 class FullCausalAttentionBypass(nn.Module):
     """
-    Full causal attention with optional Q-bypass from clean residual.
+    Full causal attention with LEARNABLE bypass gate, initialized near gate=0.
 
-    The Q projection is separated from the K/V projection so that Q can
-    optionally come from a pre-Huygens residual (saved before the interference
-    block), while K/V still use the Huygens-enriched residual stream.
+    bypass_alpha = nn.Parameter(torch.tensor(-10.0))
+    gate = sigmoid(bypass_alpha) ≈ 0.000045 at init → effectively pure contaminated Q.
 
-    Diagnostics (logged per epoch):
-      clean_norm  — L2 norm of clean_residual (pre-Huygens)
-      full_norm   — L2 norm of x (post-Huygens)
-      q_cosim     — mean cosine similarity of Q_clean vs Q_full
-                    (1.0 = bypass irrelevant; 0.0 = completely different)
-      q_delta_norm — mean L2 of (Q_clean - Q_full)
+    q_input = gate * clean_residual + (1 - gate) * x
+
+    At init: Q is purely from x (condV-like). Gradient decides whether/how much
+    to shift toward clean_residual. If gradient finds no value: stays near -10.
+    If 35M finds equilibrium: bypass_alpha drifts toward it from below.
+
+    Init at -10 (vs -3.0 in condX-v2 13M) because gate sweep showed gate=0 is
+    strictly optimal for passkey — starting at zero prevents any ramp-up cost.
+
+    Diagnostics:
+      bypass_alpha — raw learned parameter
+      bypass_gate  — sigmoid(bypass_alpha), effective clean blend weight
+      clean_norm / full_norm / q_cosim / q_delta_norm — residual/Q diagnostics
     """
     def __init__(self, embedding_dim, num_heads, dropout=0.1):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim  = embedding_dim // num_heads
         D              = embedding_dim
-        self.q_proj    = nn.Linear(D, D, bias=True)    # Q only
-        self.kv_proj   = nn.Linear(D, 2 * D, bias=True) # K + V together
+        self.q_proj    = nn.Linear(D, D, bias=True)      # Q only
+        self.kv_proj   = nn.Linear(D, 2 * D, bias=True)  # K + V together
         self.out_proj  = nn.Linear(D, D, bias=True)
         self.gate_proj = nn.Linear(D, D, bias=True)
         nn.init.constant_(self.gate_proj.bias, 0.0)
         self.dropout_p = dropout
-        # Diagnostic accumulators (populated during forward, read by block)
+
+        # Learnable gate: sigmoid(-10) ≈ 0.000045 → effectively gate=0 at init.
+        # Informed by 13M gate sweep: gate=0 is optimal for passkey on both
+        # condX and condX-v2 checkpoints. Start near the optimum; let gradient
+        # find the 35M equilibrium (if any) from below.
+        self.bypass_alpha = nn.Parameter(torch.tensor(-10.0))
+
         self._last_diagnostics = {}
 
     def forward(self, x, clean_residual=None):
         B, N, D = x.shape
         H, HD   = self.num_heads, self.head_dim
 
-        # Q from clean (pre-Huygens) residual; K/V from full (Huygens-enriched)
-        q_input = clean_residual if clean_residual is not None else x
+        if clean_residual is not None:
+            alpha   = torch.sigmoid(self.bypass_alpha)
+            q_input = alpha * clean_residual + (1.0 - alpha) * x
+        else:
+            q_input = x
+
         q = self.q_proj(q_input)
         k, v = self.kv_proj(x).split(D, dim=-1)
 
@@ -227,21 +254,24 @@ class FullCausalAttentionBypass(nn.Module):
         result   = F.dropout(self.out_proj(out_flat * gate),
                              p=self.dropout_p, training=self.training)
 
-        # Compute diagnostics (no grad, no overhead unless clean_residual provided)
+        # Diagnostics
         if clean_residual is not None:
             with torch.no_grad():
-                cn = clean_residual.norm(dim=-1).mean().item()
-                fn = x.norm(dim=-1).mean().item()
-                # Q from full residual (for comparison)
-                q_full = self.q_proj(x).view(B, N, H, HD).permute(0, 2, 1, 3)
-                q_cln  = self.q_proj(clean_residual).view(B, N, H, HD).permute(0, 2, 1, 3)
-                # Cosine similarity per (B,H,N) token, then average
-                cosim = F.cosine_similarity(q_cln.flatten(0,2), q_full.flatten(0,2),
-                                            dim=-1).mean().item()
-                qdelta = (q_cln - q_full).norm(dim=-1).mean().item()
+                alpha_val = torch.sigmoid(self.bypass_alpha).item()
+                cn    = clean_residual.norm(dim=-1).mean().item()
+                fn    = x.norm(dim=-1).mean().item()
+                q_full    = self.q_proj(x).view(B, N, H, HD).permute(0, 2, 1, 3)
+                q_blended = self.q_proj(q_input).view(B, N, H, HD).permute(0, 2, 1, 3)
+                cosim  = F.cosine_similarity(q_blended.flatten(0,2),
+                                             q_full.flatten(0,2), dim=-1).mean().item()
+                qdelta = (q_blended - q_full).norm(dim=-1).mean().item()
             self._last_diagnostics = {
-                'clean_norm': cn, 'full_norm': fn,
-                'q_cosim': cosim, 'q_delta_norm': qdelta,
+                'bypass_alpha': self.bypass_alpha.item(),
+                'bypass_gate':  alpha_val,
+                'clean_norm':   cn,
+                'full_norm':    fn,
+                'q_cosim':      cosim,
+                'q_delta_norm': qdelta,
             }
         return result
 
@@ -738,14 +768,15 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
         gain_str = '  '.join(f'h{h}:{gains[h]:.2f}' for h in range(NUM_HEADS))
         print(f'  IF gains:      {gain_str}')
 
-        # condX bypass diagnostics
-        if 'clean_norm' in ss:
+        # condX-v2 bypass gate diagnostics
+        if 'bypass_alpha' in ss:
+            print(f'  Bypass gate:   alpha={ss["bypass_alpha"]:.4f}  '
+                  f'gate={ss["bypass_gate"]:.6f}  '
+                  f'(gate→0=condV-like, gate→1=fully-clean-Q)')
             print(f'  Bypass diag:   clean_norm={ss["clean_norm"]:.4f}  '
                   f'full_norm={ss["full_norm"]:.4f}  '
                   f'q_cosim={ss["q_cosim"]:.4f}  '
                   f'q_delta_norm={ss["q_delta_norm"]:.4f}')
-            print(f'    (q_cosim → 1.0 means clean/full Q converged; '
-                  f'q_cosim ≪ 1.0 means bypass is doing real work)')
 
         if ss['ema_factors']:
             ema_str = '  '.join(f'b{i}:{v:.4f}' for i, v in enumerate(ss['ema_factors']))
@@ -778,10 +809,12 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
             'if_gain': ss['if_gain'],
             'ema_factors': ss['ema_factors'],
             'kdv_alphas':  ss['kdv_alphas'],
-            'bypass_clean_norm':  ss.get('clean_norm'),
-            'bypass_full_norm':   ss.get('full_norm'),
-            'bypass_q_cosim':     ss.get('q_cosim'),
-            'bypass_q_delta_norm':ss.get('q_delta_norm'),
+            'bypass_alpha':        ss.get('bypass_alpha'),
+            'bypass_gate':         ss.get('bypass_gate'),
+            'bypass_clean_norm':   ss.get('clean_norm'),
+            'bypass_full_norm':    ss.get('full_norm'),
+            'bypass_q_cosim':      ss.get('q_cosim'),
+            'bypass_q_delta_norm': ss.get('q_delta_norm'),
         })
         sys.stdout.flush()
 
@@ -835,11 +868,13 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
               f'q_delta_norm={ss_final["q_delta_norm"]:.4f}')
 
     results = {
-        'experiment':          'condX_huygens_bypass',
-        'hypothesis':          'Q from pre-Huygens residual preserves full-attn retrieval',
+        'experiment':          'condX_v2_35m_learnable_gate_scaled',
+        'hypothesis':          'gate=0 is optimal (sweep-confirmed); 35M may find non-zero equilibrium',
         'kernel':              'dsqg_attention_v3',
-        'base':                'condV (Kalman-EMA + KdV + AGC)',
-        'change':              'FullAttn Q from clean_residual (saved before interference block)',
+        'base':                'condV (Kalman-EMA + KdV + AGC), D=512',
+        'change':              'Learnable gate bypass_alpha=-10 init (gate≈0); condX-v2 arch at 35M',
+        'condX_v2_13m_result': '52.685 PPL / 45.0% passkey; gate sweep peak 54.2% at gate=0',
+        'gate_sweep_finding':  'gate=0 optimal on both condX and condX-v2 checkpoints; monotonic decrease to gate=1',
         'final_test_ppl':      test_ppl,
         'final_passkey_mean':  pk_final_mean,
         'final_passkey_by_d':  {str(d): v for d, v in pk_final.items()},
@@ -867,16 +902,16 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print('=' * 70)
-    print('  condX — Huygens Bypass for Full Attention (13M, FineWeb-Edu)')
+    print('  condX-v2 35M — Learnable Bypass Gate, Scaled (FineWeb-Edu)')
     print('=' * 70)
     if torch.cuda.is_available():
         print(f'  GPU: {torch.cuda.get_device_name(0)}  '
               f'({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)')
-    print(f'  Kernel:    dsqg_attention_v3 (unchanged)')
-    print(f'  Base arch: condV (Kalman-EMA + KdV + AGC interference)')
-    print(f'  Change:    FullAttn Q ← clean residual (saved before interference block)')
-    print(f'  Principle: "local oscillator stays clean" applied at macro level')
-    print(f'  References: condV=52.207/36.7% | condU=52.237/38.3% | condM=54.529/83.3%')
+    print(f'  Kernel:    dsqg_attention_v3')
+    print(f'  Base arch: condV (Kalman-EMA + KdV + AGC) + bypass gate, D=512')
+    print(f'  Gate init: bypass_alpha=-10.0 → gate≈0.000045 (effectively condV Q)')
+    print(f'  Sweep:     13M gate sweep showed gate=0 is strictly optimal for passkey')
+    print(f'  Target:    condU 35M = 38.293 PPL / 90.0% passkey')
 
     os.makedirs('benchmarks/logs', exist_ok=True)
 
@@ -902,24 +937,16 @@ def main():
     if os.path.exists(_encoded_cache):
         print(f'Loading pre-encoded dataset from {_encoded_cache} ...')
         _cache = torch.load(_encoded_cache, weights_only=True)
-        train_data = _cache['train']
-        val_data   = _cache['val']
-        test_data  = _cache['test']
-        if len(train_data) > MAX_TRAIN_SEQS:
-            idx = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
-            train_data = train_data[idx]
-        print(f'  train: {len(train_data):,}  val: {len(val_data):,}  '
-              f'test: {len(test_data):,} seqs (capped to {MAX_TRAIN_SEQS:,})')
+        train_data_full = _cache['train']
+        val_data        = _cache['val']
+        test_data       = _cache['test']
     else:
         print(f'Encoding data (max_seq_len={MAX_SEQ_LEN})...')
-        train_data = encode_split(splits['train'], tokenizer, MAX_SEQ_LEN, 'Train')
-        if len(train_data) > MAX_TRAIN_SEQS:
-            idx = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
-            train_data = train_data[idx]
-            print(f'  Capped to {MAX_TRAIN_SEQS:,} train sequences')
-        val_data   = encode_split(splits['val'],   tokenizer, MAX_SEQ_LEN, 'Val')
-        test_data  = encode_split(splits['test'],  tokenizer, MAX_SEQ_LEN, 'Test')
+        train_data_full = encode_split(splits['train'], tokenizer, MAX_SEQ_LEN, 'Train')
+        val_data        = encode_split(splits['val'],   tokenizer, MAX_SEQ_LEN, 'Val')
+        test_data       = encode_split(splits['test'],  tokenizer, MAX_SEQ_LEN, 'Test')
 
+    # ── Build model first so we can compute Chinchilla-calibrated MAX_TRAIN_SEQS ──
     model = CondXTransformer(
         vocab_size            = tokenizer.vocab_size(),
         embedding_dim         = EMBEDDING_DIM,
@@ -933,10 +960,26 @@ def main():
 
     n_params    = model.param_count()
     layer_types = model.layer_types()
-    print(f'\ncondX: {n_params:,} parameters')
-    print(f'  Layer types: {layer_types}')
-    print(f'  Clean residual saved after block: {model._clean_save_after}')
-    print(f'    (block {model._clean_save_after} = last DSQG before interference at block 2)')
+
+    # Chinchilla-calibrate: land at ep 7 (same as condU 35M)
+    # MAX_TRAIN_SEQS = (20 * params) / (NUM_EPOCHS * tokens_per_seq)
+    tokens_per_seq  = MAX_SEQ_LEN - 1                     # 2047
+    chin_total      = 20 * n_params                       # Chinchilla token budget
+    chin_at_ep7     = chin_total / 7                      # tokens per epoch for ep-7 landing
+    max_train_seqs  = int(chin_at_ep7 / tokens_per_seq)   # sequences per epoch
+    max_train_seqs  = min(max_train_seqs, len(train_data_full))
+
+    idx        = torch.randperm(len(train_data_full))[:max_train_seqs]
+    train_data = train_data_full[idx]
+
+    print(f'\ncondX 35M: {n_params:,} parameters')
+    print(f'  Layer types:  {layer_types}')
+    print(f'  Clean save after block: {model._clean_save_after}')
+    print(f'  Chinchilla budget:  {chin_total:,} tokens  ({chin_total/1e6:.1f}M)')
+    print(f'  Max train seqs:     {max_train_seqs:,}  (Chinchilla lands at ep7)')
+    print(f'  Tokens/epoch:       {max_train_seqs * tokens_per_seq:,}')
+    print(f'  Chinchilla ep:      {max_train_seqs * tokens_per_seq / chin_total * NUM_EPOCHS:.2f}')
+    print(f'  train: {len(train_data):,}  val: {len(val_data):,}  test: {len(test_data):,} seqs')
 
     if not causality_check(model, device):
         return

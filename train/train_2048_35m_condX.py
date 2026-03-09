@@ -1,44 +1,46 @@
 """
-condX — Huygens Bypass for Full Attention (13M, FineWeb-Edu)
+condX 35M — Huygens Bypass for Full Attention, scaled to ~35M (FineWeb-Edu)
 
-Hypothesis:
-  condV (Kalman-EMA + KdV + AGC interference) improves PPL but collapses
-  passkey (36.7% vs condU 38.3%). The Huygens K/V injection in DSQG blocks
-  shapes the residual stream in a way that contaminates the signal reaching
-  the full attention layer, making content-addressed retrieval harder.
+Relationship to condX 13M:
+  condX 13M showed a striking pattern at 13M scale:
+    - Consistently better PPL than condV (+3 PPL) AND passkey developing simultaneously
+    - Hard cliff at d=64: retrieval plateau at d=1-32, 0% at d≥64
+    - PPL beats condV AND condU v3 baselines (51.5 at ep7, heading below 52)
+    - Passkey migrates one tier per ~2 epochs (d=32→d=64 between ep5 and ep6)
 
-  The "local oscillator stays clean" principle already applies WITHIN each
-  DSQG attention (Q is never Huygens-injected). condX applies this same
-  principle AT THE MACRO LEVEL: the full attention layer's Q computation
-  uses a "clean residual" saved BEFORE the Huygens-processing interference
-  block, while K and V still use the full (Huygens-enriched) residual stream.
+  condU exhibited the same pattern at 13M (modest passkey), then exploded:
+    condU 13M: 52.237 PPL / 38.3% passkey
+    condU 25M: 43.434 PPL / 69.2% passkey
+    condU 35M: 38.293 PPL /  90.0% passkey  ← direct comparison target
+
+  Hypothesis: the d=64 cliff in condX 13M is the 13M-scale version of
+  condU's limited-passkey phase before the super-linear jump at 30M+.
+  At 35M, higher-dimensional representations provide:
+    - Richer holographic field (more capacity per token to encode passkey signal)
+    - Better Q/field divergence (more orthogonal space for bypass to matter)
+    - More powerful L4 staging layer (better K/V preparation for full attention)
+    - The bypass Q may be able to learn a "close enough" reference beam at 35M
+      even without field contamination
 
 Architecture:
-  Identical to condV (Kalman-EMA + KdV + AGC) with one change:
+  Identical to condX 13M with scaled-up hyperparameters:
+    EMBEDDING_DIM = 512  (was 256)
+    FFN_DIM       = 2048 (was 1024)
+    NUM_HEADS     = 8    (same)
+    NUM_LAYERS    = 6    (same)
+    INTERFERENCE  = 3    (same — L2 is the Huygens interference block)
+    FULL_ATTN_LAYER = 5  (same — L5 is the holographic decoder)
 
-  After layer 1 (last non-interference block before the layer-2 interference
-  block), we save x_clean. At layer 5 (full attention), Q is projected from
-  x_clean, K and V from the normal residual x.
+  MAX_TRAIN_SEQS is computed dynamically in main() to land Chinchilla at ep7.
 
-  This gives the full attention layer an uncontaminated query perspective
-  ("what am I looking for at this position?") while still benefiting from
-  the Huygens-enriched context in K and V.
+Baseline references:
+  condU 35M:  38.293 PPL / 90.0% passkey  ← direct target
+  condU v5 38M: 39.998 PPL / 98.3% passkey ← upper bound reference
+  condX 13M:  ~50 PPL / ~20-30% passkey    ← what we're scaling from
 
-  Diagnostics added vs condV:
-    - clean_norm / full_norm: L2 norms of clean vs contaminated residual
-      entering full attention (tracks how much they diverge)
-    - q_cosim: cosine similarity of Q computed from clean vs full residual
-      (0 = totally different, 1 = identical — convergence means bypass irrelevant)
-    - q_delta_norm: L2 of (Q_clean - Q_full), absolute divergence
-
-Baseline references (condV, same 13M architecture):
-  condV:  52.207 PPL / 36.7% passkey (Huygens disrupts full-attn retrieval)
-  condU:  52.237 PPL / 38.3% passkey (V3 kernel baseline)
-  condM:  54.529 PPL / 83.3% passkey
-
-Run (4090):
-  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u train/train_2048_condX.py \\
-    2>&1 | tee benchmarks/logs/condX_run.log
+Run (4090 — after condX 13M and condX-v2 finish):
+  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u train/train_2048_35m_condX.py \\
+    2>&1 | tee benchmarks/logs/condX_35m_run.log
 """
 
 import json, math, os, sys, time
@@ -56,10 +58,10 @@ LR              = 3e-4
 MAX_SEQ_LEN     = 2048
 NUM_DOCS        = 100_000
 
-EMBEDDING_DIM   = 256
+EMBEDDING_DIM   = 512
 NUM_LAYERS      = 6
 NUM_HEADS       = 8
-FFN_DIM         = 1024
+FFN_DIM         = 2048
 INTERFERENCE    = 3
 FULL_ATTN_LAYER = 5
 
@@ -69,7 +71,7 @@ FW_DATASET_NAME = 'HuggingFaceFW/fineweb-edu'
 FW_SUBSET       = 'sample-10BT'
 FW_MIN_CHARS    = 5_000
 FW_CACHE_FILE   = 'benchmarks/logs/condm_fineweb_edu_doc_cache.json'
-MAX_TRAIN_SEQS  = 52_716   # same as condV — Chinchilla at ep ~2.6
+MAX_TRAIN_SEQS  = None     # computed dynamically in main() → Chinchilla at ep 7
 
 # ── Passkey eval ───────────────────────────────────────────────────────────────
 
@@ -83,8 +85,8 @@ _RETRIEVAL_CUE    = 'the secret word is'
 
 # ── Save paths ─────────────────────────────────────────────────────────────────
 
-SAVE_DIR    = 'checkpoints/condX'
-RESULT_FILE = 'benchmarks/logs/condX_results.json'
+SAVE_DIR    = 'checkpoints/condX_35m'
+RESULT_FILE = 'benchmarks/logs/condX_35m_results.json'
 
 # ── Offset set (condN / condU / condV identical) ───────────────────────────────
 
@@ -835,11 +837,12 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
               f'q_delta_norm={ss_final["q_delta_norm"]:.4f}')
 
     results = {
-        'experiment':          'condX_huygens_bypass',
-        'hypothesis':          'Q from pre-Huygens residual preserves full-attn retrieval',
+        'experiment':          'condX_35m_huygens_bypass_scaled',
+        'hypothesis':          'd=64 cliff in condX 13M dissolves at 35M — same as condU passkey scaling',
         'kernel':              'dsqg_attention_v3',
-        'base':                'condV (Kalman-EMA + KdV + AGC)',
-        'change':              'FullAttn Q from clean_residual (saved before interference block)',
+        'base':                'condV (Kalman-EMA + KdV + AGC), D=512',
+        'change':              'FullAttn Q from clean_residual (saved before interference block); scaled to 35M',
+        'condX_13m_result':    '~50 PPL / ~20-30% passkey (cliff at d=64, tier-per-2ep migration)',
         'final_test_ppl':      test_ppl,
         'final_passkey_mean':  pk_final_mean,
         'final_passkey_by_d':  {str(d): v for d, v in pk_final.items()},
@@ -867,16 +870,15 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print('=' * 70)
-    print('  condX — Huygens Bypass for Full Attention (13M, FineWeb-Edu)')
+    print('  condX 35M — Huygens Bypass, Scaled (FineWeb-Edu)')
     print('=' * 70)
     if torch.cuda.is_available():
         print(f'  GPU: {torch.cuda.get_device_name(0)}  '
               f'({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)')
-    print(f'  Kernel:    dsqg_attention_v3 (unchanged)')
-    print(f'  Base arch: condV (Kalman-EMA + KdV + AGC interference)')
-    print(f'  Change:    FullAttn Q ← clean residual (saved before interference block)')
-    print(f'  Principle: "local oscillator stays clean" applied at macro level')
-    print(f'  References: condV=52.207/36.7% | condU=52.237/38.3% | condM=54.529/83.3%')
+    print(f'  Kernel:    dsqg_attention_v3')
+    print(f'  Base arch: condV (Kalman-EMA + KdV + AGC) + condX Q-bypass, D=512')
+    print(f'  Scaling:   condX 13M→35M; hypothesis: d=64 cliff dissolves at 35M scale')
+    print(f'  Target:    condU 35M = 38.293 PPL / 90.0% passkey')
 
     os.makedirs('benchmarks/logs', exist_ok=True)
 
@@ -902,24 +904,16 @@ def main():
     if os.path.exists(_encoded_cache):
         print(f'Loading pre-encoded dataset from {_encoded_cache} ...')
         _cache = torch.load(_encoded_cache, weights_only=True)
-        train_data = _cache['train']
-        val_data   = _cache['val']
-        test_data  = _cache['test']
-        if len(train_data) > MAX_TRAIN_SEQS:
-            idx = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
-            train_data = train_data[idx]
-        print(f'  train: {len(train_data):,}  val: {len(val_data):,}  '
-              f'test: {len(test_data):,} seqs (capped to {MAX_TRAIN_SEQS:,})')
+        train_data_full = _cache['train']
+        val_data        = _cache['val']
+        test_data       = _cache['test']
     else:
         print(f'Encoding data (max_seq_len={MAX_SEQ_LEN})...')
-        train_data = encode_split(splits['train'], tokenizer, MAX_SEQ_LEN, 'Train')
-        if len(train_data) > MAX_TRAIN_SEQS:
-            idx = torch.randperm(len(train_data))[:MAX_TRAIN_SEQS]
-            train_data = train_data[idx]
-            print(f'  Capped to {MAX_TRAIN_SEQS:,} train sequences')
-        val_data   = encode_split(splits['val'],   tokenizer, MAX_SEQ_LEN, 'Val')
-        test_data  = encode_split(splits['test'],  tokenizer, MAX_SEQ_LEN, 'Test')
+        train_data_full = encode_split(splits['train'], tokenizer, MAX_SEQ_LEN, 'Train')
+        val_data        = encode_split(splits['val'],   tokenizer, MAX_SEQ_LEN, 'Val')
+        test_data       = encode_split(splits['test'],  tokenizer, MAX_SEQ_LEN, 'Test')
 
+    # ── Build model first so we can compute Chinchilla-calibrated MAX_TRAIN_SEQS ──
     model = CondXTransformer(
         vocab_size            = tokenizer.vocab_size(),
         embedding_dim         = EMBEDDING_DIM,
@@ -933,10 +927,26 @@ def main():
 
     n_params    = model.param_count()
     layer_types = model.layer_types()
-    print(f'\ncondX: {n_params:,} parameters')
-    print(f'  Layer types: {layer_types}')
-    print(f'  Clean residual saved after block: {model._clean_save_after}')
-    print(f'    (block {model._clean_save_after} = last DSQG before interference at block 2)')
+
+    # Chinchilla-calibrate: land at ep 7 (same as condU 35M)
+    # MAX_TRAIN_SEQS = (20 * params) / (NUM_EPOCHS * tokens_per_seq)
+    tokens_per_seq  = MAX_SEQ_LEN - 1                     # 2047
+    chin_total      = 20 * n_params                       # Chinchilla token budget
+    chin_at_ep7     = chin_total / 7                      # tokens per epoch for ep-7 landing
+    max_train_seqs  = int(chin_at_ep7 / tokens_per_seq)   # sequences per epoch
+    max_train_seqs  = min(max_train_seqs, len(train_data_full))
+
+    idx        = torch.randperm(len(train_data_full))[:max_train_seqs]
+    train_data = train_data_full[idx]
+
+    print(f'\ncondX 35M: {n_params:,} parameters')
+    print(f'  Layer types:  {layer_types}')
+    print(f'  Clean save after block: {model._clean_save_after}')
+    print(f'  Chinchilla budget:  {chin_total:,} tokens  ({chin_total/1e6:.1f}M)')
+    print(f'  Max train seqs:     {max_train_seqs:,}  (Chinchilla lands at ep7)')
+    print(f'  Tokens/epoch:       {max_train_seqs * tokens_per_seq:,}')
+    print(f'  Chinchilla ep:      {max_train_seqs * tokens_per_seq / chin_total * NUM_EPOCHS:.2f}')
+    print(f'  train: {len(train_data):,}  val: {len(val_data):,}  test: {len(test_data):,} seqs')
 
     if not causality_check(model, device):
         return

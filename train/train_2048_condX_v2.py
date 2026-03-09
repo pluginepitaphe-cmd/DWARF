@@ -1,44 +1,50 @@
 """
-condX — Huygens Bypass for Full Attention (13M, FineWeb-Edu)
+condX-v2 — Learnable Huygens Bypass Gate (13M, FineWeb-Edu)
 
-Hypothesis:
-  condV (Kalman-EMA + KdV + AGC interference) improves PPL but collapses
-  passkey (36.7% vs condU 38.3%). The Huygens K/V injection in DSQG blocks
-  shapes the residual stream in a way that contaminates the signal reaching
-  the full attention layer, making content-addressed retrieval harder.
+Relationship to condX:
+  condX (v1) tested a HARD bypass: full attention Q always comes from a
+  clean residual saved before the Huygens interference block, regardless
+  of whether that's useful. condX v1 showed 0% passkey through ep3 —
+  the holographic read mechanism requires Q to be shaped by the interference
+  field (the Q is the "reference beam" that reconstructs the distributed
+  passkey signal). Hard-forcing a clean Q prevents this from developing.
 
-  The "local oscillator stays clean" principle already applies WITHIN each
-  DSQG attention (Q is never Huygens-injected). condX applies this same
-  principle AT THE MACRO LEVEL: the full attention layer's Q computation
-  uses a "clean residual" saved BEFORE the Huygens-processing interference
-  block, while K and V still use the full (Huygens-enriched) residual stream.
+  condX-v2 replaces the hard bypass with a LEARNABLE BLEND GATE, following
+  the zero-init principle used throughout condU/v5 (NPCI, QK-OVT, MOVT):
+  start at the known-good baseline, allow deviation only when gradient
+  signal warrants it.
 
-Architecture:
-  Identical to condV (Kalman-EMA + KdV + AGC) with one change:
+Bypass gate mechanism:
+  self.bypass_alpha = nn.Parameter(torch.tensor(-3.0))
+  alpha = sigmoid(bypass_alpha)                   # alpha ≈ 0.05 at init
+  q_input = alpha * clean_residual + (1-alpha) * x
 
-  After layer 1 (last non-interference block before the layer-2 interference
-  block), we save x_clean. At layer 5 (full attention), Q is projected from
-  x_clean, K and V from the normal residual x.
+  sigmoid(-3.0) ≈ 0.047 → Q starts ~95% contaminated (condV-like).
+  The model can push bypass_alpha positive (more clean) or negative (fully
+  contaminated) depending on what the gradient signal rewards.
 
-  This gives the full attention layer an uncontaminated query perspective
-  ("what am I looking for at this position?") while still benefiting from
-  the Huygens-enriched context in K and V.
+  If bypass is useful: bypass_alpha grows → alpha → 1 (fully clean Q).
+  If bypass is harmful: bypass_alpha stays negative → alpha → 0 (condV-like).
+  The model votes.
 
-  Diagnostics added vs condV:
-    - clean_norm / full_norm: L2 norms of clean vs contaminated residual
-      entering full attention (tracks how much they diverge)
-    - q_cosim: cosine similarity of Q computed from clean vs full residual
-      (0 = totally different, 1 = identical — convergence means bypass irrelevant)
-    - q_delta_norm: L2 of (Q_clean - Q_full), absolute divergence
+  This lets training discover the optimal blend rather than imposing it.
+  Analogy: a pebble dropped into still water — small initial deviation
+  from baseline, allows waves to form if the dynamics support them.
 
-Baseline references (condV, same 13M architecture):
-  condV:  52.207 PPL / 36.7% passkey (Huygens disrupts full-attn retrieval)
-  condU:  52.237 PPL / 38.3% passkey (V3 kernel baseline)
-  condM:  54.529 PPL / 83.3% passkey
+Diagnostics added vs condX:
+  - bypass_alpha: raw learned parameter value
+  - bypass_gate:  sigmoid(bypass_alpha) — effective clean blend weight
+  - q_cosim / q_delta_norm: Q similarity under learned blend vs full residual
 
-Run (4090):
-  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u train/train_2048_condX.py \\
-    2>&1 | tee benchmarks/logs/condX_run.log
+Baseline references:
+  condX v1: 0% passkey at ep3 (hard bypass kills holographic read)
+  condV:    52.207 PPL / 36.7% passkey
+  condU:    52.237 PPL / 38.3% passkey
+  condM:    54.529 PPL / 83.3% passkey
+
+Run (4090 — after condX v1 finishes):
+  CUDA_VISIBLE_DEVICES=0 .venv/bin/python3 -u train/train_2048_condX_v2.py \\
+    2>&1 | tee benchmarks/logs/condX_v2_run.log
 """
 
 import json, math, os, sys, time
@@ -83,8 +89,8 @@ _RETRIEVAL_CUE    = 'the secret word is'
 
 # ── Save paths ─────────────────────────────────────────────────────────────────
 
-SAVE_DIR    = 'checkpoints/condX'
-RESULT_FILE = 'benchmarks/logs/condX_results.json'
+SAVE_DIR    = 'checkpoints/condX_v2'
+RESULT_FILE = 'benchmarks/logs/condX_v2_results.json'
 
 # ── Offset set (condN / condU / condV identical) ───────────────────────────────
 
@@ -178,30 +184,42 @@ class DSQGAttentionQW(nn.Module):
 
 class FullCausalAttentionBypass(nn.Module):
     """
-    Full causal attention with optional Q-bypass from clean residual.
+    Full causal attention with LEARNABLE bypass gate from clean residual.
 
-    The Q projection is separated from the K/V projection so that Q can
-    optionally come from a pre-Huygens residual (saved before the interference
-    block), while K/V still use the Huygens-enriched residual stream.
+    Instead of hard-switching to clean Q (condX v1), uses a learned blend:
+      alpha = sigmoid(bypass_alpha)
+      q_input = alpha * clean_residual + (1 - alpha) * x
+
+    bypass_alpha initialized to -3.0 → alpha ≈ 0.047 at start.
+    Q begins ~95% contaminated (condV-like), allowing holographic read
+    mechanism to develop normally. The model learns whether/how much
+    to shift toward the clean residual as training progresses.
 
     Diagnostics (logged per epoch):
-      clean_norm  — L2 norm of clean_residual (pre-Huygens)
-      full_norm   — L2 norm of x (post-Huygens)
-      q_cosim     — mean cosine similarity of Q_clean vs Q_full
-                    (1.0 = bypass irrelevant; 0.0 = completely different)
-      q_delta_norm — mean L2 of (Q_clean - Q_full)
+      bypass_alpha — raw learned parameter (negative = more contaminated)
+      bypass_gate  — sigmoid(bypass_alpha), effective clean blend weight
+      clean_norm   — L2 norm of clean_residual (pre-Huygens)
+      full_norm    — L2 norm of x (post-Huygens)
+      q_cosim      — cosine similarity of blended Q vs fully-contaminated Q
+      q_delta_norm — L2 of (Q_blended - Q_full)
     """
     def __init__(self, embedding_dim, num_heads, dropout=0.1):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim  = embedding_dim // num_heads
         D              = embedding_dim
-        self.q_proj    = nn.Linear(D, D, bias=True)    # Q only
-        self.kv_proj   = nn.Linear(D, 2 * D, bias=True) # K + V together
+        self.q_proj    = nn.Linear(D, D, bias=True)      # Q only
+        self.kv_proj   = nn.Linear(D, 2 * D, bias=True)  # K + V together
         self.out_proj  = nn.Linear(D, D, bias=True)
         self.gate_proj = nn.Linear(D, D, bias=True)
         nn.init.constant_(self.gate_proj.bias, 0.0)
         self.dropout_p = dropout
+
+        # Learnable bypass gate: sigmoid(-3) ≈ 0.047 → ~95% contaminated at init.
+        # Positive values increase clean blend; negative values reduce it.
+        # One scalar — the model votes on how much bypass to apply.
+        self.bypass_alpha = nn.Parameter(torch.tensor(-3.0))
+
         # Diagnostic accumulators (populated during forward, read by block)
         self._last_diagnostics = {}
 
@@ -209,8 +227,14 @@ class FullCausalAttentionBypass(nn.Module):
         B, N, D = x.shape
         H, HD   = self.num_heads, self.head_dim
 
-        # Q from clean (pre-Huygens) residual; K/V from full (Huygens-enriched)
-        q_input = clean_residual if clean_residual is not None else x
+        # Learnable blend: start near contaminated (condV-like), drift toward
+        # clean if gradient signal rewards it.
+        if clean_residual is not None:
+            alpha   = torch.sigmoid(self.bypass_alpha)
+            q_input = alpha * clean_residual + (1.0 - alpha) * x
+        else:
+            q_input = x
+
         q = self.q_proj(q_input)
         k, v = self.kv_proj(x).split(D, dim=-1)
 
@@ -227,21 +251,25 @@ class FullCausalAttentionBypass(nn.Module):
         result   = F.dropout(self.out_proj(out_flat * gate),
                              p=self.dropout_p, training=self.training)
 
-        # Compute diagnostics (no grad, no overhead unless clean_residual provided)
+        # Diagnostics (no grad)
         if clean_residual is not None:
             with torch.no_grad():
-                cn = clean_residual.norm(dim=-1).mean().item()
-                fn = x.norm(dim=-1).mean().item()
-                # Q from full residual (for comparison)
-                q_full = self.q_proj(x).view(B, N, H, HD).permute(0, 2, 1, 3)
-                q_cln  = self.q_proj(clean_residual).view(B, N, H, HD).permute(0, 2, 1, 3)
-                # Cosine similarity per (B,H,N) token, then average
-                cosim = F.cosine_similarity(q_cln.flatten(0,2), q_full.flatten(0,2),
-                                            dim=-1).mean().item()
-                qdelta = (q_cln - q_full).norm(dim=-1).mean().item()
+                alpha_val = torch.sigmoid(self.bypass_alpha).item()
+                cn    = clean_residual.norm(dim=-1).mean().item()
+                fn    = x.norm(dim=-1).mean().item()
+                # Compare blended Q against fully-contaminated Q
+                q_full    = self.q_proj(x).view(B, N, H, HD).permute(0, 2, 1, 3)
+                q_blended = self.q_proj(q_input).view(B, N, H, HD).permute(0, 2, 1, 3)
+                cosim  = F.cosine_similarity(q_blended.flatten(0,2),
+                                             q_full.flatten(0,2), dim=-1).mean().item()
+                qdelta = (q_blended - q_full).norm(dim=-1).mean().item()
             self._last_diagnostics = {
-                'clean_norm': cn, 'full_norm': fn,
-                'q_cosim': cosim, 'q_delta_norm': qdelta,
+                'bypass_alpha': self.bypass_alpha.item(),
+                'bypass_gate':  alpha_val,
+                'clean_norm':   cn,
+                'full_norm':    fn,
+                'q_cosim':      cosim,
+                'q_delta_norm': qdelta,
             }
         return result
 
@@ -738,14 +766,15 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
         gain_str = '  '.join(f'h{h}:{gains[h]:.2f}' for h in range(NUM_HEADS))
         print(f'  IF gains:      {gain_str}')
 
-        # condX bypass diagnostics
-        if 'clean_norm' in ss:
+        # condX-v2 bypass diagnostics
+        if 'bypass_alpha' in ss:
+            print(f'  Bypass gate:   alpha={ss["bypass_alpha"]:.4f}  '
+                  f'gate={ss["bypass_gate"]:.4f}  '
+                  f'(gate→0=condV-like, gate→1=fully-clean-Q)')
             print(f'  Bypass diag:   clean_norm={ss["clean_norm"]:.4f}  '
                   f'full_norm={ss["full_norm"]:.4f}  '
                   f'q_cosim={ss["q_cosim"]:.4f}  '
                   f'q_delta_norm={ss["q_delta_norm"]:.4f}')
-            print(f'    (q_cosim → 1.0 means clean/full Q converged; '
-                  f'q_cosim ≪ 1.0 means bypass is doing real work)')
 
         if ss['ema_factors']:
             ema_str = '  '.join(f'b{i}:{v:.4f}' for i, v in enumerate(ss['ema_factors']))
@@ -778,6 +807,8 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
             'if_gain': ss['if_gain'],
             'ema_factors': ss['ema_factors'],
             'kdv_alphas':  ss['kdv_alphas'],
+            'bypass_alpha':       ss.get('bypass_alpha'),
+            'bypass_gate':        ss.get('bypass_gate'),
             'bypass_clean_norm':  ss.get('clean_norm'),
             'bypass_full_norm':   ss.get('full_norm'),
             'bypass_q_cosim':     ss.get('q_cosim'),
@@ -828,18 +859,21 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
         kdv_str = '  '.join(f'b{i}:{v:.4f}' for i, v in enumerate(ss_final['kdv_alphas']))
         print(f'  Final EMA factors: {ema_str}')
         print(f'  Final KdV alphas:  {kdv_str}')
-    if 'clean_norm' in ss_final:
-        print(f'  Final bypass: clean_norm={ss_final["clean_norm"]:.4f}  '
+    if 'bypass_alpha' in ss_final:
+        print(f'  Final bypass gate: alpha={ss_final["bypass_alpha"]:.4f}  '
+              f'gate={ss_final["bypass_gate"]:.4f}')
+        print(f'  Final bypass diag: clean_norm={ss_final["clean_norm"]:.4f}  '
               f'full_norm={ss_final["full_norm"]:.4f}  '
               f'q_cosim={ss_final["q_cosim"]:.4f}  '
               f'q_delta_norm={ss_final["q_delta_norm"]:.4f}')
 
     results = {
-        'experiment':          'condX_huygens_bypass',
-        'hypothesis':          'Q from pre-Huygens residual preserves full-attn retrieval',
+        'experiment':          'condX_v2_learnable_bypass_gate',
+        'hypothesis':          'Learnable Q blend (near-contaminated init) lets model discover optimal bypass',
         'kernel':              'dsqg_attention_v3',
         'base':                'condV (Kalman-EMA + KdV + AGC)',
-        'change':              'FullAttn Q from clean_residual (saved before interference block)',
+        'change':              'FullAttn Q = sigmoid(alpha)*clean + (1-sigmoid(alpha))*full; alpha init=-3.0',
+        'condX_v1_result':     '0% passkey at ep3 — hard bypass kills holographic read mechanism',
         'final_test_ppl':      test_ppl,
         'final_passkey_mean':  pk_final_mean,
         'final_passkey_by_d':  {str(d): v for d, v in pk_final.items()},
@@ -867,15 +901,16 @@ def train(model, train_data, val_data, test_data, tokenizer, device='cuda'):
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print('=' * 70)
-    print('  condX — Huygens Bypass for Full Attention (13M, FineWeb-Edu)')
+    print('  condX-v2 — Learnable Huygens Bypass Gate (13M, FineWeb-Edu)')
     print('=' * 70)
     if torch.cuda.is_available():
         print(f'  GPU: {torch.cuda.get_device_name(0)}  '
               f'({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)')
     print(f'  Kernel:    dsqg_attention_v3 (unchanged)')
     print(f'  Base arch: condV (Kalman-EMA + KdV + AGC interference)')
-    print(f'  Change:    FullAttn Q ← clean residual (saved before interference block)')
-    print(f'  Principle: "local oscillator stays clean" applied at macro level')
+    print(f'  Change:    FullAttn Q = sigmoid(alpha)*clean + (1-sigmoid(alpha))*full')
+    print(f'             bypass_alpha init=-3.0 → gate≈0.047 (~95% contaminated at start)')
+    print(f'  vs condX v1: hard bypass (100% clean Q) → 0% passkey at ep3')
     print(f'  References: condV=52.207/36.7% | condU=52.237/38.3% | condM=54.529/83.3%')
 
     os.makedirs('benchmarks/logs', exist_ok=True)
